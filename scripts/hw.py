@@ -73,7 +73,7 @@ class Mister:
         return p.stdout
 
     def get_file(self, remote, local, timeout=120):
-        p = subprocess.run([self.pscp, "-batch", "-pw", self.pw,
+        p = subprocess.run([self.pscp, "-batch", "-scp", "-pw", self.pw,
                             f"{self.user}@{self.host}:{remote}", str(local)],
                            capture_output=True, text=True, timeout=timeout)
         if p.returncode != 0:

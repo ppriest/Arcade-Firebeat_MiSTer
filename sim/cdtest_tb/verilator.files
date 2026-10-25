@@ -1,0 +1,2 @@
+rtl/cdtest/cd_reader.sv
+sim/cdtest_tb/tb_cdtest.sv

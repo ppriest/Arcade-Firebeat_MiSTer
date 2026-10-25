@@ -1,0 +1,5 @@
+rtl/mister/sdram/sdram.sv
+rtl/mister/firebeat_sdram.sv
+sim/common/sdram_chip_model_wide.sv
+sim/common/sdram_chip_model_128.sv
+sim/sdram_tb/tb_sdram.sv

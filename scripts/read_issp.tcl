@@ -17,9 +17,43 @@
 # (signed 16), hex or bit. Bit numbers index the probe bus as the RTL
 # concatenates it. Add an entry to the `switch` further down for each table.
 # By convention source bit 0 pulsed is the counter clear.
+# Firebeat (Firebeat.sv): F bring-up, M the read-back pass and the board. F's sources: 1 clear
+# frames, 2 start a read-back, 4 its range (flash, else BIOS), 8 rewrite the picture, 16 inverted,
+# 32 request the NVRAM save, 64 hold the board in reset.
 set fields_F {
     {frames           0  15 dec}
-    {pll_locked     127 127 bit}
+    {frame_50m       16  39 dec}
+    {dl_kb           40  55 dec}
+    {scan_late       56  71 dec}
+    {ioctl_download  72  72 bit}
+    {chk_busy        73  73 bit}
+    {pat_done        74  74 bit}
+    {pll_locked      75  75 bit}
+}
+set fields_M {
+    {chk_sum          0  31 hex}
+    {chk_lines       32  54 dec}
+    {chk_lat_sum     55  86 dec}
+    {chk_lat_max     87  94 dec}
+    {brd_pc          95 126 hex}
+    {brd_bad        127 127 bit}
+    {brd_reset      128 128 bit}
+}
+# FirebeatCD (rtl/cdtest/FirebeatCD.sv, Phase 0 item 2): F (24 bits) holds the controls, A and B
+# the slots.
+set fields_F_cd {
+    {frames           0  15 dec}
+    {clk_mhz         16  23 dec}
+}
+set fields_slot {
+    {requests         0  31 dec}
+    {words           32  63 dec}
+    {run_clocks      64  95 dec}
+    {latency_sum     96 127 dec}
+    {latency_max    128 159 dec}
+    {checksum       160 191 hex}
+    {image_blocks   192 223 dec}
+    {have_image     224 224 bit}
 }
 # ---------------------------------------------------------------------------
 
@@ -86,6 +120,9 @@ if {$want ne ""} {
 # than guesses.
 switch -- $inst_id {
     F       { set fields $fields_F }
+    M       { set fields $fields_M }
+    A       { set fields $fields_slot }
+    B       { set fields $fields_slot }
     default {
         puts "instance id '$inst_id' has no field table -- add one before reading it"
         exit 1
@@ -95,6 +132,7 @@ puts "decoding instance $inst_id"
 
 start_insystem_source_probe -device_name $dev -hardware_name $hw
 set raw [read_probe_data -instance_index $idx]
+if {$inst_id eq "F" && [string length $raw] == 24} { set fields $fields_F_cd }
 puts "raw ([string length $raw] bits): $raw"
 puts ""
 

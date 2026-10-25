@@ -1,0 +1,2 @@
+rtl/board/fb_spu.sv
+sim/spu_tb/tb_spu.sv

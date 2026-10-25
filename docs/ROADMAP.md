@@ -1,253 +1,298 @@
-# {{HARDWARE_NAME}} — MiSTer Core Roadmap
+# Konami Firebeat — MiSTer Core Roadmap
 
-**This roadmap is a proposal until the user approves it. No phase executes before that approval,
-and a phase whose scope changes goes back for approval.**
+**Scope: ParaParaParadise, first set `ppp11` (user decisions). Phase 0 closed; phases 1-7
+approved by the user; Phase 1 in progress.** A phase whose scope changes goes back for approval.
 
 ## Context
 
-Goal: a DE10-nano MiSTer core for {{HARDWARE_NAME}}, emulated by MAME's `{{MAME_DRIVER}}` and the
-devices it instantiates — a Quartus 17.0.2 Verilog/SystemVerilog project producing one `.rbf` and a
-`.mra` per supported set, reusing proven open components where they exist.
+Goal: a DE10-nano MiSTer core for Konami's Firebeat board, emulated by MAME's
+`konami/firebeat.cpp` and `konami/k057714.cpp` and the devices they instantiate — a Quartus 17.0.2
+Verilog/SystemVerilog project producing one `.rbf` and a `.mra` per supported set.
 
-{{WHAT_SHAPES_THIS_PROJECT}}
-<!-- The one fact that sets the shape: how much already exists in open RTL, whether the CPU is
-     proven in a sibling core, what has no implementation anywhere. Then a numbered list of what
-     is genuinely new work. Everything else is a port with verification. -->
+What shapes it: a 66 MHz PowerPC that needs caches and its on-chip DMA, a frame-buffer blitter
+over 32 MB of VRAM, and both discs read from MAME's CHDs. Open RTL covers the PowerPC (the
+Hornet core's, verified on ppp11 code). New work, in the order it gates the rest:
 
-Cross-cutting findings from the previous cores are in **[`LESSONS_LEARNED.md`](LESSONS_LEARNED.md)**.
-Working practice built on them is in **[`WORKFLOW.md`](WORKFLOW.md)**. The entries that already
-bind decisions here are collected under "Pitfalls that already bind decisions here".
+1. The memory system: SDRAM at 133.3 MHz for work RAM, flash and BIOS; DDR3 for the GCU's VRAM.
+2. The PPC's caches (I 16 KB, D 8 KB write-back) and its DMA controller (channel 3).
+3. The K057714 GCU, from MAME's model: display lists, blits with scale and blend, fills,
+   characters, four composed display contexts, CRTC.
+4. Two ATAPI drives over hps_io's image slots, the CHDs served by `MiSTer_Firebeat`.
+5. The YMZ280B and CD audio.
+
+Every number behind this is in [`HARDWARE_NOTES.md`](HARDWARE_NOTES.md). Cross-cutting findings
+from the previous cores are in [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md); working practice in
+[`WORKFLOW.md`](WORKFLOW.md).
 
 ## Progress
 
-{{PROGRESS}}
-<!-- Kept current. Opens with one bold sentence on where the project is. Every number says where
-     it came from: MAME source, a sibling core's measurement, a build report, a bench run. Use
-     "N of N" counts, not adjectives. Strike through closed items while a later reader needs the
-     history; delete them when nobody does. -->
+**Phase 0 closed on ppp11; phases 1-7 approved; Phase 1's exit met on the board; Phase 2 in progress.**
+
+Phase 1 so far, each with its evidence:
+
+| Item | State | Evidence |
+|---|---|---|
+| SDRAM at 133.3 MHz, cache, DMA, word and download ports | sim passes | `sim/sdram_tb`; HARDWARE_NOTES "Memory system benches" |
+| DDR3 for VRAM, worst play frame beside scan-out | sim passes | `sim/vram_tb`; same section |
+| top level, download, NVRAM file, test picture, read-back | sim passes | `sim/sys_tb` (commit 9b0ad9e) |
+| MRA generator | done, ppp11 / ppp / ppd in `releases/_dev` | `scripts/gen_mra.py`, `validate_mra.py` clean |
+| board exit | **met** on Firebeat_30000004 (commit 06ffbb2, fitter seed 3) | HARDWARE_NOTES "Phase 1 on the board" |
+
+Fast DDR3 ROM loading is not used: the image is 512 KB.
+
+Phase 2 so far:
+
+| Item | State | Evidence |
+|---|---|---|
+| PPC caches (I 16 KB, D 8 KB, write-back) and the cache instructions | sim matches MAME | `sim/cpu_tb`: play window 2,000,000 and loading window 1,777,257 instructions; dcbf disabled fails |
+| DMA controller | sim matches MAME | `sim/cpu_tb`, `sim/board_tb`: 295,756 DMA words to the GCU as MAME's |
+| board: bus, serial port and DS1991, RTC65271, flash x 3, GCU and YMZ280B shells | sim matches MAME on the windows | `sim/board_tb`: 302,908 device accesses in order |
+| ATAPI drives x 2 on the image slots, TOC block from MiSTer_Firebeat | written; boot run under way | `sim/boot_tb`; `chd_raw_check`: frames and TOC as .bin and .cue |
+| boot from power-on against MAME | under way | `sim/boot_tb`, `scripts/mame_boot_capture.py` |
+
+Phase 0's results, each with its section in HARDWARE_NOTES:
+
+| Item | Result | Section |
+|---|---|---|
+| 0, reference MAME | `firebeat.exe` from `E:/mame-firebeat` (branch `firebeat-meas`: per-frame GCU counters as outputs, a CD-audio mute switch); `mister.env` points at it | ROADMAP history, `mister.env` |
+| 1, workload | install from Test mode; 512x384 at 58.6 Hz in the 24 kHz mode; VRAM the whole 32 MB, 196-236 MB/s in play; work RAM to the top of 32 MB; game loop 5-15% of 66 MHz median, 44% peak; loading (LZSS) 86-99% in runs; program CD READ(10) ≤256 KB, 102 KB/s in play; music as CD audio | "Measured in MAME: ppp11", "Play" |
+| 2, CD path | two image slots from an `.mra`; raw images 4.66 MB/s one slot, 2.25 each both; CHDs through `MiSTer_Firebeat` byte-identical to the .bin, 1.42 MB/s each both, worst first word 43 ms | "CD path on the board" |
+| 3, PPC | 4.3k ALMs, 77 MHz Fmax alone; agrees with MAME over 2 M stage2 instructions; with GCX-sized caches 84-93% of 66 MHz in the heaviest game-loop frames; the game feeds the GCU by on-chip DMA | "PPC core on ppp11" |
+| 4, YMZ280B | ADPCM, 16-bit PCM, centre pan, flash readback; the Cave module lacks PCM and readback; a YMZ-only MAME reference captured | "YMZ280B on ppp11" |
+| 5, memory | ~1.26 MB of work RAM traffic a peak frame (74 MB/s), ~84% of a 16-bit SDRAM at 66.67 MHz | "Memory plan inputs" |
+| 6, area | ~20-28k ALMs of 41,910, ~170 M10K of 553; framework and PPC measured, the GCU least known | "Area" |
 
 ## Game scope
 
-{{SET_TABLE}}
-<!-- Generated from each ROM_START: set, board type, machine config, loaded bytes per region,
-     MAME flags. Loaded bytes, not declared region size. -->
+| Family | Config | Sets | SPU | Media | MAME status |
+|---|---|---|---|---|---|
+| ParaParaParadise | `firebeat_ppp` | ppp, ppp11, ppd, ppp1mp | no | 2 CD-ROMs | imperfect sound; ppp, ppd program CD BAD_DUMP |
+| Pop'n Music | `firebeat_popn` | popn4-8, popnmt (+1), popnanm (+1), popnanm2 (+3) | 68000 + RF5C400 | CD-ROM + DVD-ROM | imperfect sound |
+| Beatmania III | `firebeat_bm3` | bm3, bm3core, bm36th, bm37th, bm3final | 68000 + RF5C400 | CD-ROM + HDD, floppy | imperfect sound |
+| Keyboardmania | `firebeat_kbm` | kbm, kbh, kbm2nd, kbm3rd | no; XT446 synth | 2 CD-ROMs; two GCUs, two screens | imperfect sound |
 
 ### Scope decision
 
-- **In scope:** {{IN_SCOPE}} — one memory map, one screen, one chipset, fits the SDRAM module.
-- **Out of the first scope:** {{OUT_OF_SCOPE}} — give two independent reasons where they exist.
-- **First-target set:** {{FIRST_TARGET}} — the smallest set with the least protection involvement.
-  Final choice is a Phase 0 decision, made on which boots furthest, measured.
-- **Second target:** {{SECOND_TARGET}} — the set that exercises the next variant.
+- **In scope:** the ParaParaParadise family: PPC, one GCU, YMZ280B, two CD-ROM drives, no SPU
+  board. One memory map (`firebeat_ppp_map`, F:1652-1660), one screen.
+- **Out of this scope:** Pop'n Music and Beatmania III (a second processor board with an RF5C400
+  and 32 MB of wave RAM, a DVD or HDD); Keyboardmania (two GCUs on two screens, an MU100-class
+  synth). Pop'n Music is the next family when the user scopes it.
+- **First target `ppp11`**, the only set of the family with both CDs and the dongle dumped good,
+  and the one Phase 0 measured. Then `ppp`, `ppp1mp`, and `ppd` (the Korean cabinet's sensor bars
+  6-8, F:2062-2082, `init_ppp_overseas`).
 
-## Hardware reality (from the driver, not assumption)
+## Hardware reality
 
-Every value below is read out of the MAME driver or a device file and cites file and line. A
-value from a datasheet, a schematic or a PCB measurement says so.
+[`HARDWARE_NOTES.md`](HARDWARE_NOTES.md) holds every value with its file and line. The ppp board:
 
-### Chips
+| Part | Clock | Role | Source |
+|---|---|---|---|
+| PPC403GCX | 66 MHz | main CPU; I 16 KB / D 8 KB caches, DMA channel 3 feeds the GCU; the dongle on its serial port | F:735, 729; "PPC core on ppp11" |
+| K057714 GCU | pixel 16.6666 MHz (ppp), 25.175 MHz (others) | blitter, display lists, four display contexts, CRTC, 32 MB VRAM | F:752, 757, 1032-1055; G: |
+| YMZ280B | 16.9344 MHz | 8 voices from the two 2 MB sound flash chips | F:763, 800-805 |
+| 3 x 29F016A | | program (blank on ppp) and samples, written by the install | F:740-742 |
+| RTC65271 | | RTC and 4 KB NVRAM (the backup settings) | F:738, 791-792 |
+| ATA, two CD-ROM drives | | program CD (`ata:0`), audio CD with CD audio (`ata:1`) | F:744-746, 390-394 |
+| PC16552D | 19.6608 MHz | network UART, unused by ppp | F:769-771 |
+| DS1991 dongle | | serial, mode, licence | F:820-985 |
 
-{{CHIP_TABLE}}
+ppp's screen: 512 x 384 of 685 x 416 at 16.6666 MHz, 58.49 Hz (GCU mode 1, `control_w` bit 0
+set). Display aspect 4:3.
 
-### Clocks
+### Clocks (decided)
 
-{{CLOCKS}}
-<!-- The plan, before any RTL (the skill's clocks.md). Every board clock with its source line
-     and the pixel clock; the chosen clk_sys, which is also the video clock, with the candidates
-     considered and the arithmetic, starting from ~48 MHz with the SDRAM on the same clock; any
-     higher value carries the measurement that forced it: an integer multiple (>= 4x) of the pixel clock, >= every
-     board clock, and a base for an integer SDRAM multiple. The SDRAM multiple. Every fractional
-     clock enable with its exact ratio. How far the main CPU runs ahead to catch up SDRAM stalls.
-     Any clock that does not divide exactly, in ppm, also goes in HACKS.md. -->
+| Clock | Rate | From clk_sys | Note |
+|---|---|---|---|
+| clk_sys | 66.667 MHz | | 50 MHz x 4/3, exact; the video clock |
+| SDRAM | 133.333 MHz | x 2 | 50 MHz x 8/3, exact; Hornet's controller ran 128 MHz CL3 |
+| PPC | 66.667 MHz | enable 1 | 1.01% faster than the board's 66 MHz (HACKS when written) |
+| PPC timebase, PIT, FIT | 66 MHz | enable 99/100, exact | keeps the RTOS's timers at the board's rate |
+| pixel | 16.667 MHz | enable 1/4 | the board's crystal is 16.6666 MHz: 4 ppm slower, 58.4877 against 58.4875 Hz (HACKS) |
+| YMZ280B | 16.9344 MHz | enable 3969/15625, exact | Bresenham |
+| DDR3 | the HPS's port, clocked at clk_sys | | as Hornet |
 
-### Interrupts
+The 25.175 MHz mode (31 kHz, 640x480) is not used by ppp; it needs a second pixel cadence and is
+left to the family that uses it.
 
-{{INTERRUPTS}}
-<!-- Levels, sources, HOLD_LINE vs ASSERT_LINE in the driver, the enable/ack registers, and the
-     vectors as read from the program ROM. -->
+## Phase 0 — closed
 
-### Memory map
+The gate's proposal and its measurements are in git history and in HARDWARE_NOTES (sections in
+the Progress table). Its tools stay in use: `scripts/mame/ppp_load.lua` and
+`scripts/ppp_load_report.py` (workload), `scripts/mame_ppc_window.py` and `sim/ppc_tb` (CPU windows
+replayed against MAME), `scripts/mame/ymz_capture.lua` (YMZ280B reference), `rtl/cdtest` and
+`scripts/cdtest.py` (the CD path), `scripts/main_mister/` (`MiSTer_Firebeat` build and its host
+check).
 
-{{MEMORY_MAP}}
+## Phases 1-7 (proposed)
 
-### Video
+Each phase ends with a commit, a bench fed from MAME, and its exit check run.
 
-{{VIDEO}}
-<!-- Layers, sprite format, colour depths, palette format, priority/mixing model, screen flip,
-     what MAME says it does not emulate. -->
+### Phase 1 — Skeleton and memory system
 
-### Sound
+- **Top level** from the template: PLL per the clock table; video timing from a CRTC stub at
+  512x384 / 685x416 and enable 1/4; HDMI and analogue out through `sys/`; `Firebeat_stp` with
+  ISSP probes and the OSD's hidden debug page.
+- **SDRAM at 133.3 MHz**, Hornet's `hornet_sdram.sv` (Sorgelig's controller, port A cache, read
+  ahead) as the start: ports for PPC line fills and write-backs (16-byte bursts), DMA source reads
+  (64-byte bursts), the YMZ280B's sample reads, and the loader. Fixed priority with a starvation
+  check (LESSONS: Hornet's posted-write starvation).
+- **DDR3**, Hornet's `hornet_ddr3.sv` / Psikyo's backend as the start: VRAM 32 MB with ports for
+  the GCU's blit reads and writes and for scan-out (bursts of a line).
+- **Loading** from the `.mra`: BIOS 512 KB, dongle image, RTC preset; the MRA generator with
+  `<mameversion>`, `validate_mra.py` clean.
+- **Persistence** of the installed state, 4 MB of sound flash + 2 MB main flash + 4 KB of RTC
+  NVRAM, as the core's NVRAM files through hps_io (decided).
+- **Discs**: `S0` and `S1` slots offering CHD, served by `MiSTer_Firebeat`.
+- **Benches**: the SDRAM and DDR3 front ends replaying the measured traffic of the stage2 window
+  (`sim/ppc_tb` with the cache model counts it) at the peak rate; per-request latency histogram.
+- **Exit**: on the board, the test picture at 58.49 Hz measured on a probe, the BIOS and dongle
+  loaded and read back, the memory benches meeting the latencies the CPI figures assumed (10-20
+  clocks at clk_sys for a line fill).
 
-{{SOUND}}
+### Phase 2 — CPU and system in simulation
 
-### Protection
+- **PPC** behind a bus wrapper with the **I 16 KB / D 8 KB write-back caches** and the **DMA
+  controller** (software memory-to-memory, the mode ppp uses; anything else trapped on a probe),
+  external interrupts IRQ0-4 as `firebeat.cpp` routes them, the timebase at 99/100.
+- **System devices** from the device files: RTC65271, three 29F016A flash with their command state
+  machine, the extend-board IRQ registers, inputs and DIPs, lamps (dropped), `control_w`, the
+  DS1991 dongle on the PPC's serial port, the PC16552D as registers only.
+- **ATAPI drive model x 2**, from `atapihle.cpp` / `atapicdr.cpp`: the commands ppp sends (TEST
+  UNIT READY, READ TOC, SET CD SPEED, READ(10), MODE SELECT(10), PLAY AUDIO(12), READ SUB-CHANNEL,
+  STOP), sectors from the slots, PIO data and the IRQ4 line. Verilator serves the CHD-equivalent
+  `.bin` from a file.
+- **GCU register shell**: vblank IRQ, status, the write ports and the FIFO; commands logged, not
+  drawn (Phase 3 draws them).
+- **YMZ280B register shell** with the flash readback (the startup check reads it).
+- **Benches**: the boot trace equal to MAME's access for access (`mame_boot_trace.py`, ported to
+  the PPC); the stage2 and loading windows in the whole system rather than the CPU bench; the
+  install run from MAME's state.
+- **Exit**: in Verilator, the BIOS through "EXEC: OK", the startup check passing from installed
+  NVRAM, and SOUND FLASH INIT writing flash equal to MAME's; the stage2 window's frames finishing
+  within their frame time at the memory model's measured latency; `docs/STATE.md` listing every
+  RAM and register file reachable.
 
-{{PROTECTION}}
+### Phase 3 — Video: the GCU
 
-### Per-game configuration
+- **Command engine** from `k057714.cpp`: the two write ports and command FIFOs, display lists
+  (nesting, 0x1000-entry limit), fill (4-pixel pattern), object blit (6.6 scale, x/y flip, three
+  blend modes, bit-15 transparency, the 16 MB destination bound), 2-bpp characters, the origin.
+  Blits as row bursts against DDR3, a read stream and a write stream.
+- **Display**: four contexts composed in register 0x10's order with their alpha and blend
+  modes, the CRTC from registers 0x00-0x08, a line FIFO from DDR3 ahead of the scan.
+- **MAME is followed where it is the only model**: no busy status and instantaneous commands in
+  MAME (HARDWARE_NOTES, Video); the core takes time, which the game must tolerate (checked in
+  the exit, logged in MAME_KLUDGES / HACKS as it lands).
+- **Benches**: commands and VRAM from MAME savestates (`k057714.cpp` saves VRAM), the core's VRAM
+  and frame compared with MAME's after each command batch; the per-frame counters
+  (`gcu:stat*`) as the throughput target: 2.0 M 16-bit accesses in the worst play frame.
+- **Exit**: frames bit-exact with MAME for captured attract and play scenes; the worst measured
+  frame's command list completed within a frame at the DDR3 latency measured in Phase 1.
 
-{{PER_GAME}}
-<!-- Everything that differs between sets and so becomes .mra mod-byte configuration. -->
+### Phase 4 — Sound
+
+- **YMZ280B** written from `ymz280b.cpp`: 8 voices, ADPCM, 8- and 16-bit PCM, 9-bit pitch, pan,
+  loop, key-on/off, IRQ, the readback; samples from the sound flash in SDRAM. The Cave decoder as
+  a cross-check of the ADPCM path.
+- **CD audio** from `S1`: PLAY AUDIO(12) streamed from the slot at 176.4 KB/s through two 16 KB
+  buffers, READ SUB-CHANNEL's position kept in step; mixed with the YMZ280B.
+- **Benches**: the YMZ280B against `debug/ymz_ref` (register accesses with their times, the chip's
+  output alone), compared as audio; CD audio against the .bin.
+- **Exit**: the bench output matches MAME's within the interpolation's rounding; on the board,
+  judged by ear against MAME for the attract and the first stage.
+
+### Phase 5 — On the board
+
+- `build_staged.py` and `deploy.py` (timing met on every clock, no feature on a failing build);
+  `ppp11` installs from Test mode, boots, plays attract and a stage.
+- **Probes**: per-frame PPC busy and memory latency, DDR3 and SDRAM queue depths, GCU frame
+  overruns, CD request waits. A state dump to a file the Phase 2 bench loads.
+- **Exit**: `ppp11` plays through a stage with the sensors, the frame rate held, the probes
+  within the Phase 0 budgets; then `ppp`, `ppp1mp`, `ppd` boot and play.
+
+### Phase 6 — Standard features
+
+- **Inputs**: Left, Right, Start/OK, Test, Service, Coin; the sensor bars 1-5 as buttons (ppd
+  6-8), with MAME's keyboard keys beside the pads; IN3's DIP switches on the OSD.
+- **Pause** suspending the PPC (and its DMA and the GCU's command engine with it); hiscore does
+  not apply (the RTC NVRAM holds the settings).
+- **CRT Adjust**, HDMI scaling and crop, flip screen (ppp has no flip DIP: a fake one), audio mix;
+  the OSD shows only what applies.
+- **Exit**: the README's feature list checked on the board, flip against the unflipped frame
+  rotated 180 degrees.
+
+### Phase 7 — Release
+
+- README (sets, controls, the `MiSTer_Firebeat` requirement and its `MiSTer.ini` line, where the
+  CHDs go, the AI statement), HACKS, MAME_KLUDGES, STATE current; one `.mra` per set; floorplan;
+  the Downloader database.
+- The Main_MiSTer change's route out (see "Open decisions").
+
+## Memory plan (decided)
+
+| What | Size | Where | Traffic (Phase 0) |
+|---|---|---|---|
+| work RAM | 32 MB | SDRAM, 133.3 MHz | PPC fills and write-backs ~0.7 MB a peak frame |
+| DMA source (in work RAM) | | SDRAM | ~0.56 MB a peak frame |
+| sound flash, main flash | 4 + 2 MB | SDRAM | YMZ280B reads ≤ 0.7 MB/s |
+| BIOS | 512 KB | SDRAM | boot only |
+| GCU VRAM | 32 MB | DDR3, during play | 196 MB/s median, 236 MB/s worst frame in play |
+| RTC NVRAM, dongle | 4 KB, 200 B | block RAM | |
+| caches, I 16 KB + D 8 KB | 24 KB | block RAM | |
+| CD request buffers | 2 x 2 x 16 KB | block RAM | |
+| line FIFO for scan-out | a few lines | block RAM | |
+
+DDR3 during play carries VRAM because no SDRAM clock the board can reach carries 236 MB/s beside
+the CPU (HARDWARE_NOTES, "Memory plan inputs"). An SDRAM module of 64 MB or more is required.
 
 ## Component reuse map
 
-Every row's "source" is a file that was located and whose header was read.
-
-| block | plan | source |
+| Block | Plan | Source |
 |---|---|---|
-{{REUSE_MAP}}
-<!-- plan: "Port X" / "Written from the software model" / "From scratch" / "Sibling core's Y".
-     source: repository, path, commit, licence as stated in the files. Built by enumerating the
-     boards that use each chip and looking at those boards' cores, not by searching for the chip
-     number. -->
-
-## On-chip RAM budget
-
-{{RAM_BUDGET}}
-<!-- Every declared memory, its bits, its M10K count at the width it is actually read at, as a
-     fraction of the device, starting from the framework's own baseline. Name the one to watch. -->
-
-## Memory plan
-
-{{MEMORY_PLAN}}
-<!-- SDRAM region layout (the RTL's localparams are the source of truth; the .mra generator reads
-     them), DDR use if any, the clients of each and the per-scanline fetch budget. DDR3 at load
-     time is standard; any DDR3 client during play (ROM, graphics, frame buffer) states its
-     reason here: ROMs larger than the SDRAM, or fetch arithmetic SDRAM cannot serve. -->
-
-## Design decisions
-
-<!-- Each a bold sentence, then the evidence. Standing rules first, project decisions after. -->
-
-**Follow MAME, including where MAME is wrong, and write down every place that is.** There is no
-PCB here. MAME is the accuracy target and its acknowledged guesses are inherited deliberately. Each
-goes in `docs/MAME_KLUDGES.md` when it is implemented, with what MAME does, what the hardware is
-suspected to do, and what would settle it.
-
-**Where a vendored module and MAME disagree, record it and keep the module.** A silicon-derived
-disagreement is evidence about the chip; MAME's is evidence about MAME. It goes in
-`docs/MAME_KLUDGES.md`, not into a "fix", until one side is shown to describe the chip.
-
-**Every approximation of this core's own goes in `docs/HACKS.md`** in the commit it lands, with
-what would make it correct. A hack that is not written down is a bug nobody will find.
-
-**Transcribe the reference literally first, then look for the chip.** Build MAME's version, get
-pixel-exact (or trace-exact) agreement with captured references, and only then experiment — with
-the experiment on an OSD switch so it is an A/B, not a rebuild.
-
-**One `.rbf` for all games.** Per-set differences are `.mra` mod-byte configuration.
-
-**Two Quartus revisions, `Firebeat_stp` and `Firebeat`,** differing only by a `DEBUG_ISSP` macro.
-See [`WORKFLOW.md`](WORKFLOW.md).
-
-**Licence: {{LICENCE}}.** Every dependency, what it obliges and the release checklist are in
-[`THIRD-PARTY.md`](../THIRD-PARTY.md). `sys/` is never edited.
-
-**Per-scanline rendering from buffered sprite RAM.** The default shape, as the boards worked:
-the list latched once a frame at the point the video-write sweep identifies, a per-scanline
-engine, a double-buffered line buffer. A frame buffer only where the driver shows the board had
-one; cite it here.
-
-**No multiplies, no divides, in 2D pipelines.** Shifts, masks, adds and accumulators; WORKFLOW §14.
-GPU-like chips (3D geometry, rasterisers) use multipliers by design, budgeted in DSP blocks.
-
-{{PROJECT_DECISIONS}}
-<!-- Clocking plan and the measurement it rests on; CPU integration choice; sprite rendering
-     shape (line-based, not frame-buffered, and why); which memory each large array lives in. -->
+| PPC403GCX | Hornet `ppc403_core.sv`, PVR parameter, vendored (`rtl/cpu/ppc403/PROVENANCE.md`) | `E:/Arcade-KonamiHornet_MiSTer` at `a29b0c6` |
+| PPC caches, DMA controller | new RTL; Hornet's `hornet_icache.sv` as a start for the instruction side | `ppccom.cpp` `ppc4xx_dma_exec` |
+| SDRAM, DDR3 front ends | Hornet `hornet_sdram.sv`, `hornet_ddr3.sv`; Seta's SDRAM controller copy | siblings |
+| K057714 GCU | written from MAME's model | `src/mame/konami/k057714.cpp` |
+| YMZ280B | written from MAME's model; the Cave ADPCM decoder as a cross-check | `src/devices/sound/ymz280b.cpp`; `MiSTer-devel/Arcade-Cave_MiSTer` `rtl/cave/` at `ee191ea` |
+| ATAPI drives | written from MAME's model over hps_io's image slots | `atapihle.cpp`, `atapicdr.cpp` |
+| CHD service | Main_MiSTer `support/firebeat`, run as `MiSTer_Firebeat` | `E:/Main_MiSTer-firebeat`, branch `firebeat-chd` |
+| RTC65271, 29F016A, PC16552D, dongle | written from the device files and F:820-985 | `src/devices/machine/` |
+| Framework | Template `sys/` | MiSTer-devel |
+| Out of scope | fx68k or Musashi on the HPS, RF5C400 | the SPU families |
 
 ## Pitfalls that already bind decisions here
 
-Entries from [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md) that are not general advice but already
-constrain something written above. Read the entry, not the summary.
-
-| Entry | What it binds here |
+| Entry (LESSONS_LEARNED) | What it binds here |
 |---|---|
-{{PITFALLS}}
+| [KonamiHornet] posted-write queue starving another port | the SDRAM arbiter is checked by a run long enough to saturate the high-priority side |
+| [KonamiHornet] a snapshot bench cannot see writes that never land | every snapshot run ends by comparing each writable memory with MAME's at a later snapshot |
+| [Firebeat] pokes go between cycles | Phase 2's system bench injects state only between evaluated cycles |
+| [Firebeat] MAME's trace can repeat an instruction | the comparers fold identical lines |
+| Read the Fmax summary first; same commit, other seed | every build of Phase 5 |
 
-## Phased roadmap
+## Open decisions (for the user)
 
-<!-- Phase 0 is the gate: nothing after it starts until its exit criteria are met, and each
-     criterion is answered in place ("— Met: <evidence>" / "— Open: <what is missing>"). -->
+1. **The Main_MiSTer change.** In use now as `MiSTer_Firebeat` beside the stock binary. Whether to
+   offer it upstream (a pull request to MiSTer-devel/Main_MiSTer) and in what form is the user's
+   call; nothing is pushed. Left for later (user).
 
-**Phase 0 — Vendoring spike and the measurements. The gate.**
+## Decisions taken
 
-Vendor every reused module into `rtl/` with a `PROVENANCE.md` per directory. Run every upstream
-testbench unchanged before editing anything. Stand the CPU up in its own Quartus project
-(`rtl/synth_check/`) with the bus wrapper and the memory transport and nothing else.
-Exit criteria:
+- **ParaParaParadise first, `ppp11` the first set** (user, at research).
+- **Discs are read as the console cores read them, from CHDs** (user, at research), served by a
+  Main_MiSTer change used in place for this core: `MiSTer_Firebeat` beside the stock binary,
+  chosen by `[Firebeat*]` / `main=MiSTer_Firebeat` in `MiSTer.ini` (user, item 2).
+- **clk_sys 66.67 MHz, the PPC at enable 1** (user, after item 3).
+- **Memory**: an SDRAM module of 64 MB or more at 2 x clk_sys for work RAM, flash and BIOS; the
+  GCU's VRAM in DDR3 during play (user, after item 5).
+- **YMZ280B written from MAME's model** (user, after item 4).
+- **Phases 1-7 approved as written** (user, after Phase 0).
+- **The installed flash (6 MB) and RTC NVRAM (4 KB) persist as the core's NVRAM files** through
+  hps_io, so the Test-mode install runs once per set (user, with the phase approval).
 
-1. **Every vendored module's own tests pass unchanged, on arrival.**
-2. **The CPU boots the first target's program ROM and matches MAME's bus trace**, diffed access by
-   access, every peripheral stubbed to what MAME's returns.
-3. **Measured CPI on real game code** against the board's clock, split between execution and
-   memory stall.
-4. **Standalone Fmax and area for the CPU at this project's settings**, with the constraint that
-   proves it committed in the same commit as the measurement. This decides the clock plan.
-5. {{PHASE0_PROJECT_SPECIFIC_QUESTION}}
+## Standing rules
 
-**Phase 1 — Video, against a software model.**
-
-Build the MAME capture pipeline first (`mame_capture.py` + a `render_model.py` that reproduces the
-driver's video file), get it pixel-exact on captured frames, then check RTL against the model layer
-by layer. Exit criteria: the first target renders frames pixel-identical to MAME's for a captured
-set of scenes, silent, in simulation.
-
-**Phase 2 — Hardware bring-up and the first games.**
-
-SDRAM backend with all clients, the ROM download path, `.mra` generation, inputs, DIPs, NVRAM,
-the ISSP probe and the OSD debug page. The standard feature set: CRT Adjust (and v-size if BRAM
-allows), hiscore, fast DDR ROM loading, HDMI scaling and crop, HDMI rotation, audio mix, HDMI-only
-options hidden under direct video, CRT Adjust parameters hidden until enabled, peripheral menus
-only for games that use them (rotary: Ikari Warriors controls; guns: mouse and synthetic
-crosshair), and flip screen from the OSD or the DIP (fake DIP where the
-game has none) through one path, worked out per layer for this board. Exit criteria: {{PHASE2_SETS}} boot and play on a
-DE10-nano, silent.
-
-**Phase 3 — Sound.**
-
-{{SOUND_PLAN}}. Exit criteria: register-write traces captured from MAME reproduce correct audio,
-by ear and by a decoded capture against MAME's output.
-
-**Phase 4 — The rest of the list, and accuracy.**
-
-The remaining sets, every clone's `.mra`, {{PHASE4_ITEMS}}. `docs/MAME_KLUDGES.md` and
-`docs/HACKS.md` are the deliverables that say what is still not right and what would settle it.
-
-**Phase 5 — {{OPTIONAL_SCOPE_EXTENSION}}.** A decision with evidence rather than a default.
-
-**Phase 6 — Savestates, state dumps and cheats.** Optional but desirable. Not before Phase 4, but
-the RTL is written for it from Phase 1 (the skill's `savestates.md`): reachable RAM ports, a
-`docs/STATE.md` inventory, addressable chip state. The state dump and its simulator loader are worth
-building before the savestate itself, because they make hardware bugs reproducible in a bench.
-
-## Verification strategy
-
-- **MAME is a reference generator, driven from scripts, not a thing to eyeball.** Boot traces, VRAM
-  and register dumps at known frames, palette dumps, register-write logs. WORKFLOW §9 applies.
-- **The software model comes before the RTL.** The model is checked against MAME first; the RTL
-  against the model.
-- **Every vendored module is verified against MAME before it is wired to anything**, and its own
-  testbench is the regression for every later change to it.
-- **Layouts are verified before ROMs are involved**: every `gfx_layout` gets the "every bit of a
-  tile exactly once" check.
-- **`.mra` files are generated, not written**, re-read byte-for-byte against an image built from
-  `ROM_START`, and gated on an XML well-formedness check before deploy.
-- **Worst cases are measured in the RTL**, not modelled: saturating counters with no reset port,
-  each paired with a total.
-
-## Repository setup
-
-Seeded from **MiSTer-devel/Template_MiSTer**, `Template.*` renamed to `Firebeat.*` and split into
-the `Firebeat_stp` and `Firebeat` revisions; the Quartus 13 project dropped. Quartus **17.0.2**.
-Conventions are in [`WORKFLOW.md`](WORKFLOW.md) and `CONVENTIONS.md`.
-
-## Open items
-
-{{OPEN_ITEMS}}
-<!-- One bold sentence each, then what is known, what is assumed, and what closes it. Strike
-     through when closed and say what closed it. -->
-
-## Next steps
-
-1. {{NEXT_STEP}}
-<!-- Numbered, in order, struck through as done with a pointer to the evidence. -->
+Follow MAME, including where MAME is wrong, and write down every place that is
+(`docs/MAME_KLUDGES.md`). Every approximation of this core's own goes in `docs/HACKS.md` in the
+commit it lands. The GCU draws into a frame buffer because the board has one (k057714.cpp:532-550).

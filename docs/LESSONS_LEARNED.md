@@ -860,6 +860,33 @@ Count writes with the halves of a long merged, as the comparer does, and allow a
 within one instruction to differ in order when the same bytes are written: TG68K's exception
 frame and MOVEM order their 16-bit halves differently from MAME's 68020.
 
+
+### [Firebeat] A replay bench pokes state between cycles, never inside the cycle an instruction starts in
+
+`sim/ppc_tb` replaced a timebase read's result by writing the destination register through the
+debug port in the cycle the next instruction started. The poke clocks the core with ce low; in
+that cycle the core's start signal stayed high and its pending register write still landed after
+the poke, so the trace showed one instruction twice and the poked value lost. Loading the timebase
+itself, one instruction early, at the top of a cycle (where the PIT poke already was) agreed with
+MAME over 2 M instructions. The rule: any state injection goes in between evaluated cycles, into
+the source the instruction reads, not into its result.
+
+### [Firebeat] MAME's debugger trace can repeat one instruction with identical state
+
+In a ppp11 window MAME's trace printed `stwu` at `80027244` four times with the same registers;
+it executed once. The code had been loaded shortly before; the cause (recompilation re-entering
+the debugger hook) is not verified. A comparer and a replay bench fold consecutive identical
+lines into one.
+
+### [Firebeat] Set binary file mode before a Verilator save on Windows
+
+`VerilatedSave` and `VerilatedRestore` call `::open` without `O_BINARY` (Verilator's
+`verilated_save.cpp`). Under MinGW that is text mode: newline bytes in the model's state are
+translated on write and read, so a save restores only when its content happens to have none.
+`sim/boot_tb` saves restored for a while, then failed with "wrong end-of-file signature" even with
+identical arguments; a marker word written after the model read back as 0. `_fmode = _O_BINARY`
+at the top of `main` fixed it.
+
 ## Timing closure
 
 - **[BallySente] Ask the timing analyser which path fails; do not reason about it.** A filter
@@ -1278,8 +1305,19 @@ mode; the first attempt with the 68020 sequence took an illegal-instruction exce
 - **[Seta] Drive the plain `mame.exe`, not a fork build.** A fork (`arcade64.exe` and the like) is
   not the driver reference the notes cite and its Lua surface can differ.
 
+
+### [Firebeat] Pass -scp to pscp: it prefers SFTP, which the MiSTer serves at ~0.1 MB/s
+
+Copying a 370 MB disc image ran at 0.01 MB/s. On a 20 MB sample: `pscp` with no protocol option
+(it picks SFTP when offered) and `-sftp` took 177 s, 0.11 MB/s; `-scp` 11.3 s, 1.77 MB/s; a
+`plink ... "cat > file"` pipe 11.7 s, 1.71 MB/s. `deploy.py` and `hw.py` now pass `-scp`.
+
 ## Tooling and workflow (Quartus, ModelSim, Verilator, and the shell around them)
 
+- **[Firebeat] MAME's makefile detects Windows only from `OS=Windows_NT`, which an MSYS2 login
+  shell started from another program does not carry.** `make SUBTARGET=...` stopped at once with
+  "Unable to detect OS from uname -a: MINGW64_NT-...": `uname` is only consulted for the Unix
+  cases. `export OS=Windows_NT` inside `bash -lc` before `make`.
 - **Working directory does not reliably persist into backgrounded commands.** `cd <project> &&
   <tool>` in one line, or put the `cd` in the Tcl. Symptoms: `Error (23018): Tcl Script File ... not
   found`, `Error (12007): Top-level design entity ... is undefined`.
@@ -1344,6 +1382,10 @@ mode; the first attempt with the 68020 sequence took an illegal-instruction exce
   Administration write; the GraphQL mutation behind it is refused. The REST endpoint
   `POST repos/<owner>/<template>/generate` works with the same token. `new_core.py` uses it.
 
+With `-scp` the remote path is parsed by the MiSTer's shell (`scp -t <path>`): a name with spaces
+fails with "scp: ambiguous target" unless quoted inside the argument (`user@host:"/a b.mra"`).
+Under SFTP the same quotes would have become part of the name.
+
 ### [Silkroad] ModelSim 10.5b's `vlog -quiet` can exit 127 with no message
 
 The same compile line without `-quiet` succeeded every time; with it, half of the core's benches
@@ -1351,3 +1393,14 @@ The same compile line without `-quiet` succeeded every time; with it, half of th
 behind, so the next run hung. Compile without `-quiet` and filter the per-module lines instead
 (`scripts/run_sim.sh`). A run that dies straight after `--- vlog ---` with no error text is this.
 
+
+### [Firebeat] Reset the DDR3 masters with emu RESET: sys resets the DDR3 bridge with it
+
+`sys/sysmem.sv` resets the core's DDR3 port bridge with `reset_out`, which reaches the core as
+`RESET`: held for 2,000,000 clk_100m clocks (20 ms) after configuration and pulsed by the HPS's
+core resets. A master reset on PLL lock alone starts inside that window; a read the bridge drops
+leaves the front end waiting for data forever. Seen on the board (Firebeat_30000003): the picture
+written to DDR3 was correct (read back with `devmem`), scan-out showed the last two rows read
+before the hang on every line, and the late-line counter saturated. Reset the DDR3 side with
+`RESET` synchronised, and with nothing the bridge does not see (an OSD reset would cut a
+transaction the bridge still expects). `sim/sys_tb` drops a read in flight across the reset.

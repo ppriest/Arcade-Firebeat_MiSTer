@@ -1,0 +1,6 @@
+rtl/cpu/ppc403/sharc2_lutram.sv
+rtl/cpu/ppc403/ppc403_core.sv
+rtl/board/fb_cache.sv
+rtl/board/fb_ppc_mem.sv
+rtl/board/fb_ppc_dma.sv
+sim/cpu_tb/tb_cpu.sv

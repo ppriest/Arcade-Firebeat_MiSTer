@@ -25,7 +25,9 @@ Source references are to `{{MAME_DRIVER_DIR}}/{{DRIVER_FILE}}` unless named. MAM
 
 | Kludge | MAME | Core | Would settle it |
 |---|---|---|---|
-| {{SHORT_NAME_OR_MAME_QUOTE}} | `{{file}}:{{line}}`: {{what MAME does, quoting its own comment where it admits the guess}} | {{copies / differs: how / n/a}}, `{{core file or model function}}` | {{the measurement or capture that would answer it, or "—"}} |
+| No caches: the 403GCX's I 16 KB / D 8 KB caches are not modelled and the cache instructions are no-ops | `ppccom.cpp` (no cache state); `ppcdrc.cpp` dcbf/dcbst/dcbi/icbi/dccci/iccci generate nothing | differs: the caches exist and the instructions act on them, `rtl/board/fb_cache.sv`; MAME's memory is the core's with every cache empty, which is how the benches start | — (the game's own flushes make the two agree: sim/cpu_tb matches MAME on both windows, and fails with dcbf disabled) |
+| dcbz clears 32 bytes (`m_cache_line_size = 32`) | `ppccom.cpp:715` | copies, `ppc403_core.sv` M_DCBZ (the 403GCX's line is 16 bytes) | — (ppp executes no dcbz in either window) |
+| The serial port's interrupt lines change only when `ppc4xx_spu_update_irq_states` runs (each character period, a line-status or command write), not when the buffer is read or written: after the receive handler reads the byte, the BIOS's EXISR clear brings SPUR back and the handler runs again, clearing the line status | `ppccom.cpp:3150-3175, 3289, 3304-3335` | copies, `rtl/board/fb_spu.sv` (`upd`); without it the board's dongle check fails (boot_tb, SPU_W entry 45, MAME frame 2020) | The 403GCX's SPU interrupt on hardware: a probe of EXISR after a buffer read |
 
 <!-- Examples of the shape, from sibling cores:
 | "Tokkae shadow masking (INACCURATE)" | `konamigx_v.cpp`, primodes 4 and 5: a shadow's priority is raised to the highest priority of a layer that SHD_ON excludes | copies, `mixer_shadow_setup` | The K055555 SHD_ON behaviour on hardware (MAME calls it a HACK) |

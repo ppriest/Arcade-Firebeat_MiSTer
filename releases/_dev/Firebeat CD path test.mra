@@ -1,0 +1,6 @@
+<misterromdescription>
+    <name>Firebeat CD path test</name>
+    <setname>firebeatcd</setname>
+    <rbf>Firebeat</rbf>
+    <about>Phase 0 item 2: reads the images mounted in S0 and S1; counters on ISSP probes A, B, F.</about>
+</misterromdescription>

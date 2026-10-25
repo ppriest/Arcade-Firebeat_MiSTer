@@ -98,3 +98,5 @@ releases/*.rbf
 **/.DS_Store
 __pycache__/
 *.pyc
+build_synth/
+build_*.log

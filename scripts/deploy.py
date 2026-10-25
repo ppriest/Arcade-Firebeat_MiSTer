@@ -86,8 +86,9 @@ class Mister:
         print(f"    {local.name}  ->  {remote}")
         if self.dry:
             return
-        p = subprocess.run([self.pscp, "-batch", "-pw", self.pw,
-                            str(local), f"{self.user}@{self.host}:{remote}"],
+        p = subprocess.run([self.pscp, "-batch", "-scp", "-pw", self.pw,
+                            # -scp: the remote scp's shell parses the path, so it is quoted
+                            str(local), f'{self.user}@{self.host}:"{remote}"'],
                            capture_output=True, text=True, timeout=300)
         if p.returncode != 0:
             sys.exit(f"copy failed ({p.returncode}): {local} -> {remote}\n"
@@ -276,9 +277,7 @@ def main():
             if remote_dir not in made:
                 m.run(f'mkdir -p "{remote_dir}"')
                 made.add(remote_dir)
-            # NOT quoted: pscp takes argv directly, so shell quotes would
-            # become part of the remote path. The mkdir above IS quoted,
-            # because that one is interpreted by a remote shell.
+            # put() quotes the path for the remote scp's shell, as the mkdir is
             m.put(f, f"{remote_dir}/{f.name}")
 
         if skipped:

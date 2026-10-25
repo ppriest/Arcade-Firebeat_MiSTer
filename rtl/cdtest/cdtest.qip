@@ -1,0 +1,7 @@
+set_global_assignment -name VERILOG_FILE rtl/lfsr.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cos.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mycore.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/issp_probe.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cdtest/cd_reader.sv
+set_global_assignment -name SDC_FILE Firebeat.sdc
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cdtest/FirebeatCD.sv
