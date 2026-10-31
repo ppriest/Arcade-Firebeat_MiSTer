@@ -1,0 +1,5 @@
+rtl/mister/hornet_ddr3.sv
+rtl/board/fb_gcu.sv
+rtl/board/fb_gcu_shell.sv
+rtl/video/fb_gcu_disp.sv
+sim/gcu_tb/tb_gcu.sv

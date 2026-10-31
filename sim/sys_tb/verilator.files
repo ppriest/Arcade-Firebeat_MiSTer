@@ -1,8 +1,7 @@
 rtl/mister/sdram/sdram.sv
 rtl/mister/firebeat_sdram.sv
 rtl/mister/hornet_ddr3.sv
-rtl/video/fb_video_timing.sv
-rtl/video/fb_scanout.sv
+rtl/video/fb_gcu_disp.sv
 rtl/bringup/pattern_writer.sv
 rtl/bringup/mem_check.sv
 rtl/cpu/ppc403/sharc2_lutram.sv
@@ -15,10 +14,12 @@ rtl/board/fb_spu.sv
 rtl/board/fb_rtc65271.sv
 rtl/board/fb_flash.sv
 rtl/board/fb_ymz_shell.sv
+rtl/board/fb_gcu.sv
 rtl/board/fb_gcu_shell.sv
 rtl/board/fb_atapi.sv
 rtl/board/fb_cd_slot.sv
 rtl/board/fb_ata.sv
+rtl/board/fb_dump.sv
 rtl/board/fb_board.sv
 rtl/firebeat_sys.sv
 sim/common/sdram_chip_model_wide.sv

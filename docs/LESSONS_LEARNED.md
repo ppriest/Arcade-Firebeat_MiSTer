@@ -703,6 +703,17 @@ throughout. A bench pass then says nothing about the CPU that is on the board. R
 each tool uses (`PROVENANCE.md`), and when only that CPU's behaviour differs on hardware, suspect the
 pair before the RTL around it.
 
+### [Firebeat] A bench switch that restores the reference's order also hides what the hardware setting does
+
+The CPU-and-devices benches held the CPU during DMA (`dma_hold`) so every access came in MAME's
+order and could be compared; the hardware core lets the DMA run beside the CPU. Under that setting
+the BIOS reprogrammed a running DMA channel, which the controller then followed mid-transfer: the
+board failed the BIOS's VRAM test (E121) while every compared bench passed, and the play-window
+budget had been measured on a run that dropped half its GCU data. A full-system bench on the
+hardware setting (`sim/sys_tb` step 6) reproduced the board's screen. Run at least one bench with
+every switch as the hardware core sets it, and count what a concurrency shortcut drops (here,
+starts ignored while busy) instead of trusting a frame time measured over it.
+
 ## Testbench discipline
 
 - **[BallySente] A vendored module's compile WARNING can be a latent fatal.** T80 has carried a
@@ -871,6 +882,16 @@ itself, one instruction early, at the top of a cycle (where the PIT poke already
 MAME over 2 M instructions. The rule: any state injection goes in between evaluated cycles, into
 the source the instruction reads, not into its result.
 
+### [Firebeat] Every path that clocks the DUT steps every bench model
+
+`sim/board_tb`'s register pokes clocked the board through a `tick()` that skipped the DDR3 model,
+so a beat's `DOUT_READY` stayed high for the poked clock and `hornet_ddr3` took it twice. From the
+first poke on, each read's tag consumed the previous read's extra beat; with one-beat VRAM writes
+this only shifted the GCU's data, and once the GCU burst its writes a display-list read waited
+forever for a beat already consumed. Found by comparing the FIFO's beats with the reads issued
+(`rf_wp - rf_rp` against `r_out`) and the model's clock count with the RTL's. The rule: one clock
+function per bench, and every model steps in it.
+
 ### [Firebeat] MAME's debugger trace can repeat one instruction with identical state
 
 In a ppp11 window MAME's trace printed `stwu` at `80027244` four times with the same registers;
@@ -886,6 +907,18 @@ translated on write and read, so a save restores only when its content happens t
 `sim/boot_tb` saves restored for a while, then failed with "wrong end-of-file signature" even with
 identical arguments; a marker word written after the model read back as 0. `_fmode = _O_BINARY`
 at the top of `main` fixed it.
+
+### [Firebeat] A Python reference model needs C's integer semantics checked, by random tests
+
+A model transcribed from MAME's C++ into Python agrees with MAME on every captured window and can
+still be wrong where the captures never go. `scripts/gcu_model.py` reproduced both GCU windows
+bit-exactly and had two bugs: a display list's bound written as `VRAM_WORDS // 2` (lists above
+word 4M never ran), and a negative destination address written through numpy's index, which wraps
+to the end of VRAM where C's `uint32` compare clips it. Neither address range occurs in ppp's
+captures. Both were found only when `scripts/gcu_random.py`'s synthetic windows put the RTL and the
+model in disagreement and MAME's source was read line by line at the difference. Check every
+signed/unsigned compare, every shift that overflows `int32`, and every array index that can go
+negative; then run random stimulus that reaches the edges of each range.
 
 ## Timing closure
 
@@ -975,6 +1008,21 @@ multicycle. The real project's first compile was -7.954 ns with all thirty worst
 kernel: the side project's `.sdc` had never been copied. Move the constraint, not the conclusion, in
 the same commit as the measurement. "All worst paths inside one vendored module" is a missing
 constraint, not a design problem.
+
+### [Firebeat] Logic a port can never reach still sets the critical path
+
+`clk_sys` (66.67 MHz) missed by 0.023 ns at seed 5 and by 0.074 ns at seeds 1 and 3, always on one
+path: the instruction cache's read address (`fb_cache:u_ic|ra`) through its line mux to `i_rdata`,
+then the CPU's fetch bypass, the GPR read and `o_v`. The mux forwards the last write's data and tag
+into a lookup of the same set in the same clock. The data cache needs it: a store hit writes its
+lane in the clock it answers, and the next request is taken in that same clock. The instruction
+cache cannot reach it: its `we` is tied low, and a fill ends in C_DONE before the next request is
+taken, so the RAM has seen the write an edge before the lookup's read address. `FWD` became a
+parameter, 0 on `u_ic`: same seed 5, `clk_sys` went from -0.023 to +0.268 ns with the benches
+unchanged -- cpu_tb's two windows (4,490,004 and 3,113,137 clocks), board_tb's 302,908 compared
+accesses and boot_tb's 71 streams (15,484,942 accesses) byte for byte. Before restructuring a
+module two instances share, check whether the port it serves can reach the logic at all; a
+parameter keeps the single source.
 
 ### [Seta] Relaxing a constraint that is no longer the bottleneck measures WORSE
 
@@ -1121,6 +1169,20 @@ mode; the first attempt with the 68020 sequence took an illegal-instruction exce
   message naming them. What worked: a textbook simple-dual-port module (`gx_sdpram.sv`) instanced
   per memory, one read port shared. A standalone synth harness per block found all three; in the
   full design they would have been a failed fit pointing at nothing.
+- **[Firebeat] A byte-enabled array written in a `for` loop is built from registers, without a
+  message.** `fb_cache`'s data, `logic [3:0][7:0] dmem [NS]` with `if (be[b]) dmem[a][b] <= ...`
+  in a loop: 24 KB of cache became 200k registers and the first full build reached 414% of the
+  ALMs, while the tag arrays beside it were inferred. A RAM per byte (`logic [7:0] dmem [NS]`, one
+  write enable) fixed it. The benches had passed for the whole of Phase 2: synthesize an integrated
+  board once, early, before its benches are the only evidence.
+- **[Firebeat] Quartus 17 rejects a part-select of a function's result** (`f(x)[3:0]`, Error
+  10170 near "["); Verilator accepts it. Assign the result to a variable first.
+- **[Firebeat] Quartus 17 needs `generate`/`endgenerate` round a module-scope `if`; Verilator
+  does not.** `if (FWD) begin : g_fwd ... end else begin : g_nofwd ... end` at module scope stopped
+  the compile at `Error (10170): ... near text: "if"; expecting "endmodule"`, plus twelve errors
+  downstream of it, after Verilator had taken the same file and run every bench on it. Wrap it (the
+  named blocks are unchanged); `quartus_map --analysis_and_elaboration` on the staged tree catches
+  this in seconds instead of a 15-minute build.
 - **[MS32] Past about 90% of M10K, count blocks, not bits.** An M10K is 1024 x 10 (or 256 x 40, 8192
   x 1), so a 32,768 x 16 RAM is 64 blocks however many bits it holds. 82% of bits and still over 553
   blocks.

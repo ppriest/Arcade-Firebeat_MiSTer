@@ -11,6 +11,10 @@
 // Cache instructions (ppc403_core d_cop): dcbf, dcbst, dcbi, dccci to the data cache's
 // maintenance port, icbi and iccci to the instruction cache's.
 //
+// [Firebeat] flush (the state dump, with the CPU stopped at an instruction boundary): every dirty
+// line of the data cache is written back, set by set, lines kept valid and clean; flushed is high
+// from the last write-back until flush drops. The data cache runs without ce for it.
+//
 // Line port: firebeat_sdram's cache port (16-byte lines at SDRAM addresses: work RAM at 0, the BIOS
 // at 0x2800000). Word port: physical byte addresses, for the board's decode.
 
@@ -34,6 +38,9 @@ module fb_ppc_mem (
     input  logic [2:0]   d_cop,
     output logic         d_ack,
     output logic [31:0]  d_rdata,
+
+    input  logic         flush,
+    output logic         flushed,
 
     input  logic [31:0]  iccr,
     input  logic [31:0]  dccr,
@@ -90,11 +97,24 @@ wire  [2:0]  mo = mp_v ? mp_op : d_cop;
 wire  [30:0] ma = mp_v ? mp_addr : d_addr;
 always_ff @(posedge clk) begin
     if (mp_new) begin mp_v <= 1'b1; mp_op <= d_cop; mp_addr <= d_addr; end
-    if (ic_m_ack || dc_m_ack) mp_v <= 1'b0;
+    if (ic_m_ack || (dc_m_ack && !wk_on)) mp_v <= 1'b0;
     if (reset) mp_v <= 1'b0;
 end
 
-fb_cache #(.SB(9)) u_ic (
+// the flush walk: set wk_i[8:1], way wk_i[0]
+logic        wk_on;
+logic [8:0]  wk_i;
+always_ff @(posedge clk) begin
+    if (!flush) begin wk_on <= 1'b0; flushed <= 1'b0; wk_i <= '0; end
+    else if (!wk_on && !flushed && !mp_v) wk_on <= 1'b1;
+    else if (wk_on && dc_m_ack) begin
+        wk_i <= wk_i + 9'd1;
+        if (wk_i == 9'h1FF) begin wk_on <= 1'b0; flushed <= 1'b1; end
+    end
+    if (reset) begin wk_on <= 1'b0; flushed <= 1'b0; end
+end
+
+fb_cache #(.SB(9), .FWD(1'b0)) u_ic (
     .clk, .reset, .ce,
     .req(i_req), .we(1'b0), .addr(i_addr), .be(4'hF), .wdata(32'd0),
     .cacheable(iccr[31 - ireg] && is_mem(i_addr)), .wthru(1'b0),
@@ -108,18 +128,19 @@ fb_cache #(.SB(9)) u_ic (
 );
 
 fb_cache #(.SB(8)) u_dc (
-    .clk, .reset, .ce,
-    .req(d_req && d_cop == 3'd0), .we(d_we), .addr(d_addr), .be(d_be), .wdata(d_wdata),
+    .clk, .reset, .ce(ce || wk_on),
+    .req(d_req && d_cop == 3'd0 && ce), .we(d_we), .addr(d_addr), .be(d_be), .wdata(d_wdata),
     .cacheable(dccr[31 - dreg] && is_mem(d_addr)), .wthru(dcwr[31 - dreg]),
     .ack(dc_ack), .rdata(d_rdata),
-    .m_req(mv && mo <= 3'd4), .m_op(mo), .m_addr(ma), .m_ack(dc_m_ack),
+    .m_req(wk_on || (mv && mo <= 3'd4)), .m_op(wk_on ? {1'b1, wk_i[0], !wk_i[0]} : mo),
+    .m_addr(wk_on ? {19'd0, wk_i[8:1], 4'd0} : ma), .m_ack(dc_m_ack),
     .l_req(dc_l_req), .l_we(dc_l_we), .l_addr(dc_l_addr), .l_wdata(dc_l_wdata), .l_ack(dc_l_ack),
     .l_rdata(c_rdata),
     .u_req(dc_u_req), .u_we(dc_u_we), .u_addr(dc_u_addr), .u_be(dc_u_be), .u_wdata(dc_u_wdata),
     .u_ack(dc_u_ack), .u_rdata
 );
 
-assign d_ack = dc_ack || dc_m_ack || ic_m_ack;
+assign d_ack = dc_ack || (dc_m_ack && !wk_on) || ic_m_ack;
 
 // ---------------------------------------------------------------- the line and word ports
 // each held by one cache from its request to its acknowledge, the data cache first

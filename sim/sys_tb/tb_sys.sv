@@ -27,6 +27,7 @@ module tb_sys (
     input  logic         chk_sel,
     input  logic         pat_start,
     input  logic         pat_variant,
+    input  logic         test_pic,
     output logic         chk_busy,
     output logic [31:0]  chk_sum,
     output logic [22:0]  chk_lines,
@@ -38,6 +39,14 @@ module tb_sys (
     output logic [31:0]  brd_pc,
     output logic         brd_bad,
     output logic         brd_reset,
+    // the board's bus monitor (fb_board mon_*), for +io
+    output logic         mon_v, mon_we,
+    output logic [30:0]  mon_addr,
+    output logic [31:0]  mon_mask, mon_data,
+    output logic         dcr_v,             // a DMA register write, and whether its engine was busy
+    output logic [9:0]   dcr_a,
+    output logic [31:0]  dcr_d,
+    output logic         dma_e_busy,
 
     input  logic [7:0]   ddr_lat,
     input  logic [7:0]   ddr_busy_pct
@@ -65,7 +74,11 @@ module tb_sys (
     logic [15:0] sensor [4] = '{16'd0, 16'd0, 16'd0, 16'd0};
     logic [3:0]  cabinet_info = 4'd8;
 
-    firebeat_sys u (.reset(1'b0), .*);
+    firebeat_sys u (.reset(1'b0), .dump_start(1'b0), .dump_on_err(1'b0), .dump_busy(), .dump_held(), .*);
+    assign mon_v = u.u_board.mon_v, mon_we = u.u_board.mon_we, mon_addr = u.u_board.mon_addr;
+    assign mon_mask = u.u_board.mon_mask, mon_data = u.u_board.mon_data;
+    assign dcr_v = u.u_board.u_dma.dcr_we && u.u_board.u_dma.dcr_hit, dcr_a = u.u_board.u_dma.dcr_addr;
+    assign dcr_d = u.u_board.u_dma.dcr_wdata, dma_e_busy = u.u_board.u_dma.busy;
 
     sdram_chip_model_128 u_chip (
         .clk(clk_mem), .SDRAM_DQ, .SDRAM_A, .SDRAM_BA, .SDRAM_nCS, .SDRAM_nWE, .SDRAM_nRAS,

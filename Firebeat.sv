@@ -47,15 +47,26 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 localparam CONF_STR = {
 	"Firebeat;;",
 	"-;",
-	"S0,CHDBINISOIMG,Program CD;",
-	"S1,CHDBINISOIMG,Audio CD;",
+	"SC0,CHDBINISOIMG,Program CD;",
+	"SC1,CHDBINISOIMG,Audio CD;",
 	"-;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"-;",
+	"H0P1,Debug;",
+	"P1T[64],Dump state / release;",
+	"P1O[65],Dump on slave error,Off,On;",
 	"-;",
 	"R[0],Reset and close OSD;",
 	"J1,Left,Right,Start,Coin,Test,Service,Pause;",
 	"V,v",`BUILD_DATE
 };
+
+// the Debug page (WORKFLOW section 4): hidden when FB_RELEASE is defined
+`ifdef FB_RELEASE
+wire debug_hidden = 1'b1;
+`else
+wire debug_hidden = 1'b0;
+`endif
 
 wire   [1:0] buttons;
 wire [127:0] status;
@@ -88,7 +99,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2), .BLKSZ(2)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask(16'd0),
+	.status_menumask({15'd0, debug_hidden}),
 	.joystick_0(joy),
 	.RTC(hps_rtc),
 
@@ -144,10 +155,13 @@ wire [31:0] chk_sum, chk_lat_sum, brd_pc;
 wire [22:0] chk_lines;
 wire [7:0]  chk_lat_max;
 wire [15:0] scan_late, dl_kb;
-wire        brd_bad, brd_reset;
+wire        brd_bad, brd_reset, dump_busy, dump_held;
+reg         dump_t_q;
+always @(posedge clk_sys) dump_t_q <= status[64];
 
-// IN0 (firebeat.cpp INPUT_PORTS ppp): active low, bit 6 unused high, bit 7 unused low
-wire [7:0] in0 = {1'b0, 1'b1, ~joy[7], ~joy[6], ~joy[9], ~joy[8], ~joy[5], ~joy[4]};
+// IN0 (firebeat.cpp INPUT_PORTS ppp): active low; 0 Left, 1 Right, 2 Test, 3 Service, 4 Coin,
+// 5 Start/OK; bit 6 unused high, bit 7 unused low
+wire [7:0] in0 = {1'b0, 1'b1, ~joy[6], ~joy[7], ~joy[9], ~joy[8], ~joy[5], ~joy[4]};
 reg  pause, joy10_q;
 always @(posedge clk_sys) begin
 	joy10_q <= joy[10];
@@ -163,6 +177,7 @@ assign DDRAM_CLK = clk_sys;
 firebeat_sys sys (
 	.clk(clk_sys), .clk_mem, .pll_locked, .reset, .hps_reset(RESET),
 	.hold(issp_src[6]), .pause, .hps_rtc,
+	.dump_start(status[64] && !dump_t_q), .dump_on_err(status[65]), .dump_busy, .dump_held,
 	.ioctl_download, .ioctl_index, .ioctl_wr, .ioctl_addr, .ioctl_dout,
 	.ioctl_upload, .ioctl_rd, .ioctl_din, .ioctl_wait,
 	.SDRAM_A, .SDRAM_DQ, .SDRAM_DQML, .SDRAM_DQMH, .SDRAM_BA, .SDRAM_nCS, .SDRAM_nWE,
@@ -173,6 +188,7 @@ firebeat_sys sys (
 	.in0, .in1(8'hFF), .in2(8'hFF), .in3(8'hFF), .sensor, .cabinet_info(4'd8),
 	.ce_pix, .vid_r, .vid_g, .vid_b, .vid_hs, .vid_vs, .vid_hb, .vid_vb,
 	.chk_start(issp_src[1]), .chk_sel(issp_src[2]), .pat_start(issp_src[3]), .pat_variant(issp_src[4]),
+	.test_pic(issp_src[7]),
 	.chk_busy, .chk_sum, .chk_lines, .chk_lat_sum, .chk_lat_max,
 	.scan_late, .pat_done, .dl_kb, .brd_pc, .brd_bad, .brd_reset
 );
@@ -191,7 +207,7 @@ assign VGA_R  = vid_r;
 assign VGA_G  = vid_g;
 assign VGA_B  = vid_b;
 
-assign LED_USER = ioctl_download | ioctl_upload;
+assign LED_USER = ioctl_download | ioctl_upload | dump_busy | dump_held;
 
 ///////////////////////   PROBES   ///////////////////////////////
 
@@ -200,7 +216,8 @@ assign LED_USER = ioctl_download | ioctl_upload;
 // CLK_50M clocks, which checks the PLL and the timing together (58.4877 Hz: 854,881).
 // Sources: [0] clear the frame counter, [1] start a read-back pass (probe M), [2] its range
 // (0 BIOS, 1 flash), [3] rewrite the test picture, [4] inverted, [5] request the NVRAM save,
-// [6] hold the board in reset (needed for a read-back pass).
+// [6] hold the board in reset (needed for a read-back pass), [7] show the test picture instead
+// of the GCU's display.
 reg  [15:0] frames;
 reg         vs_q;
 always @(posedge clk_sys) begin

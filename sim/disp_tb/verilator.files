@@ -1,0 +1,3 @@
+rtl/mister/hornet_ddr3.sv
+rtl/video/fb_gcu_disp.sv
+sim/disp_tb/tb_disp.sv

@@ -12,8 +12,9 @@
 //
 // Maintenance port (the cache instructions, ppc403_core d_cop): op 1 write back the line if it is
 // dirty and invalidate it (dcbf), 2 write it back and keep it clean (dcbst), 3 invalidate it
-// (dcbi, icbi), 4 invalidate both ways of the line's set (dccci, iccci). Taken only between CPU
-// requests; m_ack like ack.
+// (dcbi, icbi), 4 invalidate both ways of the line's set (dccci, iccci); [Firebeat] 5 and 6 write
+// back way 0 or 1 of the set m_addr names if it is dirty and keep it valid (the state dump's walk,
+// which knows sets, not addresses). Taken only between CPU requests; m_ack like ack.
 //
 // Line port: a 16-byte read (fill) or write (write-back), held until l_ack; word k of the line
 // (byte address + 4k) in bits 32k+31:32k, big-endian words. Word port: an uncached access.
@@ -21,10 +22,15 @@
 // Storage: data in four word lanes per way, each a RAM with a registered read address (so a whole
 // line is read or written in a clock), tags likewise; valid, dirty and LRU bits in registers so
 // that reset and set invalidation are immediate. The last data and tag writes are forwarded to the
-// lookup that reads them in the same clock.
+// lookup that reads them in the same clock, where a cache needs it (FWD): a store hit writes its
+// lane in the clock it answers, and the next request can be taken in that same clock, so a lookup
+// of that set then reads the RAM during the write. In the instruction cache FWD is 0: it never
+// stores, and a fill is always followed by C_DONE before the next request is taken, so the RAM has
+// seen the write an edge before the lookup's read address.
 
 module fb_cache #(
-    parameter int SB = 8                // set bits
+    parameter int SB = 8,               // set bits
+    parameter bit FWD = 1'b1            // write forwarding into a same-clock lookup
 ) (
     input  logic         clk,
     input  logic         reset,
@@ -87,45 +93,52 @@ logic [SB-1:0]  dw_set;
 logic [15:0]    dw_be;                  // per byte of the line, lane 0 in [3:0]
 logic [127:0]   dw_data;
 
-genvar gw, gl;
+// a RAM per byte of the line: Quartus 17 builds a byte-enabled array written in a loop as registers
+genvar gw, gb;
 generate for (gw = 0; gw < 2; gw++) begin : g_way
     logic [TW-1:0] tmem [NS];
     always_ff @(posedge clk) if (tw_en && tw_way == gw) tmem[tw_set] <= tw_tag;
     assign tq[gw] = tmem[ra];
-    for (gl = 0; gl < 4; gl++) begin : g_lane
-        logic [3:0][7:0] dmem [NS];
-        always_ff @(posedge clk)
-            if (dw_way[gw])
-                for (int b = 0; b < 4; b++)
-                    if (dw_be[4*gl + b]) dmem[dw_set][b] <= dw_data[32*gl + 8*b +: 8];
-        assign dq[gw][32*gl +: 32] = dmem[ra];
+    for (gb = 0; gb < 16; gb++) begin : g_byte
+        logic [7:0] dmem [NS];
+        always_ff @(posedge clk) if (dw_way[gw] && dw_be[gb]) dmem[dw_set] <= dw_data[8*gb +: 8];
+        assign dq[gw][8*gb +: 8] = dmem[ra];
     end
 end endgenerate
 
 always_ff @(posedge clk) ra <= ra_n;
 
-// the last writes, forwarded to a lookup of the same set
-logic           ft_v, ft_way;
-logic [SB-1:0]  ft_set;
-logic [TW-1:0]  ft_tag;
-logic [1:0]     fd_way;
-logic [SB-1:0]  fd_set;
-logic [15:0]    fd_be;
-logic [127:0]   fd_data;
-always_ff @(posedge clk) begin
-    if (tw_en) begin ft_v <= 1'b1; ft_way <= tw_way; ft_set <= tw_set; ft_tag <= tw_tag; end
-    if (dw_way != 2'b00) begin fd_way <= dw_way; fd_set <= dw_set; fd_be <= dw_be; fd_data <= dw_data; end
-    if (reset) begin ft_v <= 1'b0; fd_way <= 2'b00; end
-end
-
+// the last writes, forwarded to a lookup of the same set (FWD)
 logic [TW-1:0]  tag_r [2];
 logic [127:0]   line_r [2];
-always_comb for (int w = 0; w < 2; w++) begin
-    tag_r[w] = (ft_v && ft_way == w && ft_set == ra) ? ft_tag : tq[w];
-    line_r[w] = dq[w];
-    if (fd_way[w] && fd_set == ra)
-        for (int b = 0; b < 16; b++) if (fd_be[b]) line_r[w][8*b +: 8] = fd_data[8*b +: 8];
+generate
+if (FWD) begin : g_fwd
+    logic           ft_v, ft_way;
+    logic [SB-1:0]  ft_set;
+    logic [TW-1:0]  ft_tag;
+    logic [1:0]     fd_way;
+    logic [SB-1:0]  fd_set;
+    logic [15:0]    fd_be;
+    logic [127:0]   fd_data;
+    always_ff @(posedge clk) begin
+        if (tw_en) begin ft_v <= 1'b1; ft_way <= tw_way; ft_set <= tw_set; ft_tag <= tw_tag; end
+        if (dw_way != 2'b00) begin fd_way <= dw_way; fd_set <= dw_set; fd_be <= dw_be; fd_data <= dw_data; end
+        if (reset) begin ft_v <= 1'b0; fd_way <= 2'b00; end
+    end
+
+    always_comb for (int w = 0; w < 2; w++) begin
+        tag_r[w] = (ft_v && ft_way == w && ft_set == ra) ? ft_tag : tq[w];
+        line_r[w] = dq[w];
+        if (fd_way[w] && fd_set == ra)
+            for (int b = 0; b < 16; b++) if (fd_be[b]) line_r[w][8*b +: 8] = fd_data[8*b +: 8];
+    end
+end else begin : g_nofwd
+    always_comb for (int w = 0; w < 2; w++) begin
+        tag_r[w]  = tq[w];
+        line_r[w] = dq[w];
+    end
 end
+endgenerate
 
 // ---------------------------------------------------------------- the request in hand
 logic           r_we, r_wthru;
@@ -250,6 +263,11 @@ always_ff @(posedge clk) begin
         case (r_op)
         3'd4: begin v[0][ra] <= 1'b0; v[1][ra] <= 1'b0; c <= C_MDONE; end
         3'd3: begin if (hit) v[hway][ra] <= 1'b0; c <= C_MDONE; end
+        3'd5, 3'd6:                     // r_op[1]: 5 way 0, 6 way 1
+            if (v[r_op[1]][ra] && dt[r_op[1]][ra]) begin
+                wb_line <= line_r[r_op[1]]; wb_addr <= {tag_r[r_op[1]], ra}; fill_way <= r_op[1];
+                c <= C_MWB;
+            end else c <= C_MDONE;
         default:                        // 1 flush, 2 store
             if (hit && dt[hway][ra]) begin
                 wb_line <= hline; wb_addr <= r_addr[30:4]; fill_way <= hway; c <= C_MWB;

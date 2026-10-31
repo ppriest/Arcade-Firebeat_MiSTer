@@ -13,7 +13,7 @@
 // TEST UNIT READY, REQUEST SENSE (with t10mmc's audio-status sense), INQUIRY, START STOP UNIT,
 // PREVENT ALLOW, READ CAPACITY, READ(10), READ SUB-CHANNEL format 1, READ TOC format 0,
 // PLAY AUDIO(10)/(12), STOP PLAY/SCAN, SET CD SPEED, MODE SELECT(10) (audio-page volumes kept for
-// Phase 5); anything else completes with no data, as t10spc's default.
+// Phase 4); anything else completes with no data, as t10spc's default.
 //
 // Differences from MAME (HACKS): data for a transfer is produced while the drive shows BSY (MAME
 // produces it inside the command write); a READ transfers at most one 2048-byte sector a DRQ
@@ -64,8 +64,112 @@ module fb_atapi #(
     output logic        play_on,
     output logic [31:0] play_lba,
     output logic [7:0]  vol0, vol1,
+    output logic        check,          // [Firebeat] a command ended in CHECK CONDITION, sense key check_key
+    output logic [3:0]  check_key,
+    input  logic [6:0]  st_a,           // [Firebeat] the state dump's register block (below)
+    output logic [31:0] st_d,
+    input  logic        st_we,
+    input  logic [31:0] st_wd,
     output logic        bad
 );
+
+// [Firebeat] The state dump's register block (docs/STATE.md): st_a's word of the protocol's
+// registers (0x00-0x3F) or the engine's (0x40-0x7F), each list naming the registers its always
+// block assigns. st_we writes one, in Verilator only (sim/boot_tb +state); the hardware reads them.
+// The transfer buffers (b_e, b_o) are not in it: a dump taken during a transfer cannot be resumed.
+`define FB_ATAPI_ST_P \
+    `ST(7'h00, status) \
+    `ST(7'h01, error) \
+    `ST(7'h02, feature) \
+    `ST(7'h03, count) \
+    `ST(7'h04, secnum) \
+    `ST(7'h05, cyll) \
+    `ST(7'h06, cylh) \
+    `ST(7'h07, devhead) \
+    `ST(7'h08, command) \
+    `ST(7'h09, devctl) \
+    `ST(7'h0A, resetting) \
+    `ST(7'h0B, single) \
+    `ST(7'h0C, irq) \
+    `ST(7'h0D, packet) \
+    `ST(7'h0E, busy_on) \
+    `ST(7'h0F, bparam) \
+    `ST(7'h10, btmr) \
+    `ST(7'h11, boff) \
+    `ST(7'h12, bsize) \
+    `ST(7'h13, dsize) \
+    `ST(7'h14, f_n) \
+    `ST(7'h15, w_n) \
+    `ST(7'h16, pdiag_q) \
+    `ST(7'h17, dasp_o) \
+    `ST(7'h18, pdiag_o) \
+    `ST(7'h19, {cmd[3], cmd[2], cmd[1], cmd[0]}) \
+    `ST(7'h1A, {cmd[7], cmd[6], cmd[5], cmd[4]}) \
+    `ST(7'h1B, {cmd[11], cmd[10], cmd[9], cmd[8]}) \
+    `ST(7'h1C, {dout[3], dout[2], dout[1], dout[0]}) \
+    `ST(7'h1D, {dout[7], dout[6], dout[5], dout[4]}) \
+    `ST(7'h1E, {dout[11], dout[10], dout[9], dout[8]}) \
+    `ST(7'h1F, {dout[15], dout[14], dout[13], dout[12]}) \
+    `ST(7'h20, {dout[19], dout[18], dout[17], dout[16]}) \
+    `ST(7'h21, {dout[23], dout[22], dout[21], dout[20]}) \
+    `ST(7'h22, {dout[27], dout[26], dout[25], dout[24]}) \
+    `ST(7'h23, {dout[31], dout[30], dout[29], dout[28]}) \
+    `ST(7'h24, {dout[35], dout[34], dout[33], dout[32]}) \
+    `ST(7'h25, {dout[39], dout[38], dout[37], dout[36]}) \
+    `ST(7'h26, {dout[43], dout[42], dout[41], dout[40]}) \
+    `ST(7'h27, {dout[47], dout[46], dout[45], dout[44]}) \
+    `ST(7'h28, {dout[51], dout[50], dout[49], dout[48]}) \
+    `ST(7'h29, {dout[55], dout[54], dout[53], dout[52]}) \
+    `ST(7'h2A, {dout[59], dout[58], dout[57], dout[56]}) \
+    `ST(7'h2B, {dout[63], dout[62], dout[61], dout[60]})
+`define FB_ATAPI_ST_E \
+    `ST(7'h41, e_skey) \
+    `ST(7'h42, sasc) \
+    `ST(7'h43, sascq) \
+    `ST(7'h44, media_change) \
+    `ST(7'h45, audio_sense) \
+    `ST(7'h46, lba) \
+    `ST(7'h47, blocks) \
+    `ST(7'h48, last_lba) \
+    `ST(7'h49, a_play) \
+    `ST(7'h4A, a_pause) \
+    `ST(7'h4B, a_ended) \
+    `ST(7'h4C, a_lba) \
+    `ST(7'h4D, a_len) \
+    `ST(7'h4E, a_len_n) \
+    `ST(7'h4F, a_smp) \
+    `ST(7'h50, a_acc) \
+    `ST(7'h51, tick44) \
+    `ST(7'h52, ntoc) \
+    `ST(7'h53, bi) \
+    `ST(7'h54, t_i) \
+    `ST(7'h55, t_lba) \
+    `ST(7'h56, t_play) \
+    `ST(7'h57, t_rel) \
+    `ST(7'h58, m_v) \
+    `ST(7'h59, m_m) \
+    `ST(7'h5A, m_s) \
+    `ST(7'h5B, m_sel) \
+    `ST(7'h5C, m_rel) \
+    `ST(7'h5D, msf_abs) \
+    `ST(7'h5E, msf_rel) \
+    `ST(7'h5F, msf_ok) \
+    `ST(7'h60, pf_on) \
+    `ST(7'h61, pf_ok) \
+    `ST(7'h62, pf_lba) \
+    `ST(7'h63, pf_half) \
+    `ST(7'h64, fetching) \
+    `ST(7'h65, fetch_host) \
+    `ST(7'h66, w_i) \
+    `ST(7'h67, f_half_r) \
+    `ST(7'h68, tw) \
+    `ST(7'h69, vol0) \
+    `ST(7'h6A, vol1) \
+    `ST(7'h6B, identify) \
+    `ST(7'h6C, x_check) \
+    `ST(7'h6D, x_dsc) \
+    `ST(7'h6E, x_phase) \
+    `ST(7'h6F, x_len)
 
 localparam logic [2:0] P_RESET = 3'd0, P_DETECT = 3'd1, P_DIAG = 3'd2, P_PDIAG = 3'd3, P_CMD = 3'd4;
 localparam logic [1:0] PH_NONE = 2'd0, PH_IN = 2'd1, PH_OUT = 2'd2;
@@ -124,6 +228,7 @@ always_ff @(posedge clk) begin
     logic do_fill, do_wbuf, do_sig;
     do_fill = 1'b0; do_wbuf = 1'b0; do_sig = 1'b0;
     resp <= 1'b0;
+    check <= 1'b0;
     x_go <= 1'b0; f_go <= 1'b0; w_go <= 1'b0;
     pdiag_q <= pdiag_i;
 
@@ -265,6 +370,7 @@ always_ff @(posedge clk) begin
         logic [15:0] c;
         status[7] <= 1'b0;
         if (x_check) begin status[0] <= 1'b1; error <= {skey, 4'h0}; end
+        check <= x_check; check_key <= skey;
         if (x_dsc) status[4] <= 1'b1;
         dsize <= x_len;
         c = {cylh, cyll};
@@ -339,6 +445,14 @@ always_ff @(posedge clk) begin
         devhead <= 8'h00; command <= 8'h00; packet <= 1'b0; boff <= '0; bsize <= '0; single <= 1'b0;
         busy_on <= 1'b1; btmr <= 12'd2000; bparam <= CSEL ? P_DIAG : P_DETECT;
     end
+`ifdef VERILATOR
+    if (st_we) case (st_a)
+`define ST(i, x) i: x <= ($bits(x))'(st_wd);
+        `FB_ATAPI_ST_P
+`undef ST
+        default: ;
+    endcase
+`endif
 end
 
 function automatic logic [15:0] bsize_next(input logic [7:0] h, input logic [7:0] l);
@@ -401,9 +515,14 @@ logic        f_half_r;                  // the half a response or sector is in
 logic [31:0] a_len_n;
 assign f_dhalf = f_half_r;
 
-// TOC lookups (asynchronous in fb_ata)
+// TOC lookups (asynchronous in fb_ata), registered here: the entry's fields are used the clock
+// after toc_sel names it, so every state that reads one spends a clock (tw) waiting for it
 logic [6:0] toc_sel;
 assign toc_a = toc_sel;
+logic [31:0] tstart;
+logic        taud, tw;
+logic [3:0]  tctl;
+always_ff @(posedge clk) begin tstart <= toc_start; taud <= toc_audio; tctl <= toc_ctl; end
 // the next track's start, for searches
 logic [6:0] t_next;
 
@@ -456,7 +575,7 @@ always_comb begin
         default: bval = (bi >= 16'd8 && bi < 16'd36) ? " " : 8'h00;
         endcase
     8'h25: begin
-        st = toc_start - 32'd1;
+        st = tstart - 32'd1;
         case (bi)
         16'd0: bval = st[31:24]; 16'd1: bval = st[23:16]; 16'd2: bval = st[15:8]; 16'd3: bval = st[7:0];
         16'd6: bval = 8'h08; default: bval = 8'h00;
@@ -473,9 +592,9 @@ always_comb begin
             k = 4'((bi - 16'd4) & 16'd7);
             toc_entry_start = k == 4'd0;
             tr = (i == ntoc - 8'd1) ? 8'hAA : first + i;
-            st = cmd[1][1] ? msf_abs : toc_start;
+            st = cmd[1][1] ? msf_abs : tstart;
             case (k)
-            4'd1: bval = adrctl(toc_audio, toc_ctl);       // the lead-out: the last track's flags (below)
+            4'd1: bval = adrctl(taud, tctl);       // the lead-out: the last track's flags (below)
             4'd2: bval = tr;
             4'd4: bval = st[31:24]; 4'd5: bval = st[23:16]; 4'd6: bval = st[15:8]; 4'd7: bval = st[7:0];
             default: bval = 8'h00;
@@ -487,7 +606,7 @@ always_comb begin
         16'd1: bval = a_play ? (a_pause ? 8'h12 : 8'h11) : (a_ended ? 8'h13 : 8'h15);
         16'd3: bval = cmd[2][6] ? 8'd12 : 8'd0;
         16'd4: bval = cmd[2][6] ? 8'h01 : 8'h00;
-        16'd5: bval = cmd[2][6] ? adrctl(toc_audio, toc_ctl) : 8'h00;
+        16'd5: bval = cmd[2][6] ? adrctl(taud, tctl) : 8'h00;
         16'd6: bval = cmd[2][6] ? {1'b0, t_i} + 8'd1 : 8'h00;
         16'd7: bval = cmd[2][6] ? 8'd1 : 8'h00;
         16'd8: bval = cmd[2][6] ? msf_abs[31:24] : 8'h00; 16'd9: bval = cmd[2][6] ? msf_abs[23:16] : 8'h00;
@@ -625,7 +744,12 @@ always_ff @(posedge clk) begin
         end
     end
 
-    case (g)
+    // a state reading the TOC acts every second clock, when tstart and friends hold its entry
+    tw <= 1'b0;
+    if (!tw && (g == G_PLAY0 || g == G_PLAY1 || g == G_LEAD || g == G_PLAY2 || g == G_SUBTRK || g == G_SUB2 ||
+                (g == G_BYTE && (cmd[0] == 8'h43 || cmd[0] == 8'h25 || cmd[0] == 8'h42))))
+        tw <= 1'b1;
+    else case (g)
     G_IDLE: ;
     G_XDONE: begin
         g <= G_IDLE;
@@ -635,19 +759,19 @@ always_ff @(posedge clk) begin
     end
     // PLAY AUDIO: lba 0 is the first track's start if audio, else 150; then the lba's track
     G_PLAY0: begin
-        if (t_lba == 32'd0) t_lba <= toc_audio ? toc_start : 32'd150;     // toc_a = 0
+        if (t_lba == 32'd0) t_lba <= taud ? tstart : 32'd150;     // toc_a = 0
         t_i <= 7'd0;
         g <= G_PLAY1;
     end
     G_PLAY1:
-        if (t_next < ntrk && t_lba >= toc_start) t_i <= t_next;
+        if (t_next < ntrk && t_lba >= tstart) t_i <= t_next;
         else begin t_play <= 1'b1; g <= G_LEAD; end
     G_LEAD: begin                       // past the lead-out MAME's get_track finds no track: 0
-        if (t_lba >= toc_start) t_i <= 7'd0;
+        if (t_lba >= tstart) t_i <= 7'd0;
         g <= t_play ? G_PLAY2 : G_SUB2;
     end
     G_PLAY2: begin
-        if (toc_audio) begin
+        if (taud) begin
             a_play <= 1'b1; a_pause <= 1'b0; a_ended <= 1'b0; a_lba <= t_lba; a_len <= a_len_n; a_smp <= '0;
             audio_sense <= ASC_PLAYING;
         end else begin e_skey <= 4'h5; sasc <= 8'h64; sascq <= 8'h00; end
@@ -655,11 +779,11 @@ always_ff @(posedge clk) begin
     end
     // READ SUB-CHANNEL: the position's track, then its MSFs, then the bytes
     G_SUBTRK:
-        if (t_next < ntrk && t_lba >= toc_start) t_i <= t_next;
+        if (t_next < ntrk && t_lba >= tstart) t_i <= t_next;
         else begin t_play <= 1'b0; g <= G_LEAD; end
     G_SUB2:
-        if (cmd[1][1]) begin m_v <= t_lba + 32'd150; m_m <= '0; m_s <= '0; m_sel <= 1'b0; m_rel <= 1'b0; t_rel <= t_lba - toc_start; g <= G_MSF; end
-        else begin msf_abs <= t_lba; msf_rel <= t_lba - toc_start; g <= G_BYTE; end
+        if (cmd[1][1]) begin m_v <= t_lba + 32'd150; m_m <= '0; m_s <= '0; m_sel <= 1'b0; m_rel <= 1'b0; t_rel <= t_lba - tstart; g <= G_MSF; end
+        else begin msf_abs <= t_lba; msf_rel <= t_lba - tstart; g <= G_BYTE; end
     G_MSF:
         if (!m_sel) begin
             if (m_v >= 32'd4500) begin m_v <= m_v - 32'd4500; m_m <= m_m + 8'd1; end
@@ -678,7 +802,7 @@ always_ff @(posedge clk) begin
     // a response, a byte a clock, into half f_half_r
     G_BYTE:
         if (cmd[0] == 8'h43 && toc_entry_start && cmd[1][1] && !msf_ok) begin
-            m_v <= toc_start + 32'd150; m_m <= '0; m_s <= '0; m_sel <= 1'b0; g <= G_MSF;
+            m_v <= tstart + 32'd150; m_m <= '0; m_s <= '0; m_sel <= 1'b0; g <= G_MSF;
         end else begin
             msf_ok <= 1'b0;
             eb_we <= 1'b1; eb_a <= {f_half_r, bi[10:0]};
@@ -735,6 +859,27 @@ always_ff @(posedge clk) begin
         pf_on <= 1'b0; pf_ok <= 1'b0; fetching <= 1'b0; fetch_host <= 1'b0; bad <= 1'b0;
         vol0 <= 8'hFF; vol1 <= 8'hFF; msf_ok <= 1'b0;
     end
+`ifdef VERILATOR
+    if (st_we) case (st_a)
+`define ST(i, x) i: x <= ($bits(x))'(st_wd);
+        `FB_ATAPI_ST_E
+`undef ST
+        7'h40: g <= g_t'(st_wd[3:0]);
+        default: ;
+    endcase
+`endif
+end
+
+always_comb begin
+    st_d = 32'd0;
+    case (st_a)
+`define ST(i, x) i: st_d = 32'(x);
+    `FB_ATAPI_ST_P
+    `FB_ATAPI_ST_E
+`undef ST
+    7'h40: st_d = 32'(g);
+    default: ;
+    endcase
 end
 
 endmodule

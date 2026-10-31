@@ -25,12 +25,16 @@ module tb_board (
     output logic [31:0]  w_wdata,
     input  logic         w_ack,
     input  logic [31:0]  w_rdata,
-    output logic         v_req,
-    output logic         v_we,
-    output logic [22:0]  v_addr,
-    output logic [31:0]  v_wdata,
-    input  logic         v_ack,
-    input  logic [31:0]  v_rdata,
+    // VRAM: the DDRAM port of the GCU's hornet_ddr3 (sim/common/ddr3_model.h)
+    input  logic         DDRAM_BUSY,
+    output logic [7:0]   DDRAM_BURSTCNT,
+    output logic [28:0]  DDRAM_ADDR,
+    input  logic [63:0]  DDRAM_DOUT,
+    input  logic         DDRAM_DOUT_READY,
+    output logic         DDRAM_RD,
+    output logic [63:0]  DDRAM_DIN,
+    output logic [7:0]   DDRAM_BE,
+    output logic         DDRAM_WE,
     input  logic [1:0]   img_mounted,
     input  logic [63:0]  img_size,
     output logic [31:0]  sd_lba0,
@@ -85,5 +89,22 @@ module tb_board (
     assign sd_blk_cnt0 = sd_blk_cnt[0];
     assign sd_blk_cnt1 = sd_blk_cnt[1];
     wire por = reset;
-    fb_board u (.*);
+    logic        vm_read, vm_write, vm_waitn, vm_rvalid;
+    logic [31:0] vm_addr, vm_wdata, vm_wdata_hi, vm_rdata, vm_rdata_hi;
+    logic [10:0] vm_burst;
+    logic [3:0]  vm_be, vm_be_hi;
+    fb_board u (.*, .halt(1'b0), .frozen(), .st_a(14'd0), .st_d(), .st_we(1'b0), .st_wd(32'd0), .ata_check(), .ata_key(), .gd_crtc(), .gd_layer(), .gd_alpha(), .gd_x(), .gd_y(), .gd_w(), .gd_h(), .gd_base(), .gd_6c());
+    // master 1 idle: hornet_ddr3 needs two
+    logic [1:0] d_waitn, d_rvalid;
+    hornet_ddr3 #(.N(2), .WIDE(2'b11), .PRI(0)) u_ddr3 (
+        .clk, .reset(por), .drain(1'b0), .idle(),
+        .m_read({1'b0, vm_read}), .m_write({1'b0, vm_write}), .m_addr({32'd0, vm_addr}),
+        .m_burst({11'd2, vm_burst}), .m_be({4'hF, vm_be}), .m_wdata({32'd0, vm_wdata}),
+        .m_be_hi({4'hF, vm_be_hi}), .m_wdata_hi({32'd0, vm_wdata_hi}), .m_waitn(d_waitn),
+        .m_rvalid(d_rvalid), .m_rready(2'b11), .m_rdata(vm_rdata), .m_rdata_hi(vm_rdata_hi),
+        .DDRAM_BUSY, .DDRAM_BURSTCNT, .DDRAM_ADDR, .DDRAM_DOUT, .DDRAM_DOUT_READY, .DDRAM_RD,
+        .DDRAM_DIN, .DDRAM_BE, .DDRAM_WE, .dbg(), .dbg_cmd()
+    );
+    assign vm_waitn = d_waitn[0];
+    assign vm_rvalid = d_rvalid[0];
 endmodule

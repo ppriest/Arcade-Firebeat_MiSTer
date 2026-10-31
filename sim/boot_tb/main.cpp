@@ -4,7 +4,7 @@
 //
 //   scripts/run_verilator.sh boot_tb +boot=debug/ppp11-boot +frames=N [+bios=FILE] [+lat=N]
 //       [+cd0=BIN +cue0=CUE +cd1=BIN +cue1=CUE] [+trace=FROM] [+iolog=FROM] [+save=FRAME] [+restore=FILE]
-//       [+events=FRAME:MASK:LEN,...]
+//       [+events=FRAME:MASK:LEN,...] [+reset_at=CLOCK] [+sdwait=MIN[:MAX]] [+dump=FRAME] [+state=FILE]
 //
 // Without <boot>/nvram_start the board starts blank, as MAME without NVRAM files: the flash 0xFF,
 // the RTC in its reset state (MAME's nvram_default).
@@ -14,8 +14,19 @@
 // before the first event. When the board makes that write, an event at MAME frame F fires
 // F - (the anchor's MAME frame) frames later.
 //
+// +reset_at=CLOCK: the board reset for 16 clocks at the first clock from CLOCK with no SDRAM or slot
+// request open, as the OSD's "Reset" after mounting the discs; they must stay mounted.
+// +sdwait=MIN[:MAX]: clocks from a slot request to its first data, uniform per request (default
+// 33000). The board's CHD reads take 2-43 ms to the first word (HARDWARE_NOTES, the slot table).
 // +save=FRAME writes the model and the bench's state to <boot>/save_<FRAME>.bin at that frame;
 // +restore=FILE resumes from one (the same build of the model only).
+// +dump=FRAME runs the board's state dump (rtl/board/fb_dump.sv) at that frame, writes
+// <boot>/dump_<FRAME>.bin as the HPS fetches it (DDR3 0x34000000-0x3661FFFF, then VRAM
+// 0x30000000-0x31FFFFFF), checks its SDRAM block against the bench's SDRAM, and releases the board.
+// +state=FILE starts the board from such a file instead of power-on: SDRAM, VRAM and the register
+// block loaded, the CPU from its first instruction there. MAME's streams do not apply then. The
+// devices' blocks are written once both slots have served their mount (whose media change would
+// overwrite the drives'), and the CPU is held until then.
 //
 // The board starts as the core loads it: the BIOS and the dongle image (the .mra), the flash chips
 // and the RTC from the NVRAM files the MAME run started from (<boot>/nvram_start). The discs come
@@ -32,6 +43,7 @@
 
 #include "Vtb_boot.h"
 #include "verilated.h"
+#include "../common/ddr3_model.h"
 #include <algorithm>
 #include <fcntl.h>
 #include "verilated_save.h"
@@ -133,7 +145,35 @@ int main(int argc, char **argv) {
     }
     long iolog_from = atol(arg("iolog", "-1").c_str());   // device accesses from this frame, but the GCU's, the inputs' and the sensors'
     long save_at = atol(arg("save", "-1").c_str());
+    long long reset_at = atoll(arg("reset_at", "-1").c_str());
+    int reset_left = 0;
+    // +sdwait=MIN[:MAX]: clocks from a slot request to its data, uniform in [MIN, MAX] per request
+    int sdw_min = 33000, sdw_max = 33000;
+    uint32_t sdw_rng = 1;
+    {
+        std::string w = arg("sdwait", "");
+        if (!w.empty()) {
+            sdw_min = sdw_max = atoi(w.c_str());
+            size_t c = w.find(':');
+            if (c != std::string::npos) sdw_max = atoi(w.c_str() + c + 1);
+        }
+    }
+    auto sd_wait = [&]() {
+        sdw_rng = sdw_rng * 1103515245u + 12345u;
+        return sdw_min + (int)((sdw_rng >> 8) % (uint32_t)(sdw_max - sdw_min + 1));
+    };
     std::string restore_f = arg("restore", "");
+    long dump_at = atol(arg("dump", "-1").c_str());
+    std::string state_f = arg("state", "");
+    std::vector<uint8_t> stf;
+    if (!state_f.empty()) {
+        stf = load(state_f, 0x2620000 + 0x2000000);
+        if (stf.size() != 0x2620000 + 0x2000000 || stf[0] != 0x44 || stf[1] != 0x53 || stf[2] != 0x42 || stf[3] != 0x46) {
+            fprintf(stderr, "%s: not a state dump\n", state_f.c_str()); return 1;
+        }
+    }
+    // a dump file's little-endian word at byte offset o
+    auto stw = [&](uint32_t o) { return (uint32_t)stf[o] | stf[o + 1] << 8 | stf[o + 2] << 16 | (uint32_t)stf[o + 3] << 24; };
     std::string bios_f = arg("bios", "debug/ppp11-win21357/bios.bin");
     std::string cdf[2] = {arg("cd0", "debug/cdimages/gc977jaa01.bin"), arg("cd1", "debug/cdimages/gc977jaa02.bin")};
     std::string cuef[2] = {arg("cue0", "debug/cdimages/gc977jaa01.cue"), arg("cue1", "debug/cdimages/gc977jaa02.cue")};
@@ -141,15 +181,33 @@ int main(int argc, char **argv) {
     // SDRAM: work RAM (zero), the flash chips, the BIOS
     std::vector<uint8_t> sd(0x4000000, 0);
     const char *fl[3] = {"flash_main", "flash_snd1", "flash_snd2"};
+    bool nv_ok = true;
     for (int k = 0; k < 3; k++) {
         auto f = load(bdir + "nvram_start/" + fl[k], 0x200000, false);
-        if (f.empty()) f.assign(0x200000, 0xff);
+        if (f.empty()) { nv_ok = false; f.assign(0x200000, 0xff); }
         memcpy(sd.data() + 0x2000000 + 0x200000 * k, f.data(), f.size());
     }
     { auto b = load(bios_f, 0x80000); memcpy(sd.data() + 0x2800000, b.data(), b.size()); }
     auto rtcnv = load(bdir + "nvram_start/rtc", 4152, false);
+    if (!stf.empty()) rtcnv.resize(4152);
+    if (!stf.empty()) for (int i = 0; i < 4152; i++) rtcnv[i] = stf[0x1000 + 4 * (0x2000 + i)];   // the dump's
+    // say it: a capture without nvram_start cannot be compared with MAME's run, which started from
+    // the files mame_boot_capture.py copies there
+    if (!nv_ok || rtcnv.empty()) {
+        std::string what;
+        if (!nv_ok) what += "blank flash";
+        if (rtcnv.empty()) what += what.empty() ? "the RTC at its reset default" : " and the RTC at its reset default";
+        fprintf(stderr, "no %snvram_start: the board starts with %s, not MAME's run's NVRAM\n",
+                bdir.c_str(), what.c_str());
+    }
     auto dongle = load(bdir + "dongle.bin", 256);
-    std::vector<uint32_t> vram(0x800000, 0);
+    // VRAM: the GCU's hornet_ddr3 on the DE10-nano's DDR3 (+ddrlat, +ddrbusy)
+    Ddr3Model ddr;
+    {
+        const char *a;
+        if ((a = Verilated::commandArgsPlusMatch("ddrlat=")) && *a) ddr.lat = atoi(a + 8);
+        if ((a = Verilated::commandArgsPlusMatch("ddrbusy=")) && *a) ddr.busy = atoi(a + 9);
+    }
 
     // the discs: frames, padding to 512, then the TOC block (2 blocks)
     struct Disc { FILE *f = nullptr; uint64_t frames = 0, data_bytes = 0, size = 0; std::vector<uint8_t> toc; };
@@ -247,6 +305,23 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < rtcnv.size(); i++) { t->rtc_nv_we = 1; t->rtc_nv_addr = i; t->rtc_nv_wdata = rtcnv[i]; tick(); }
     t->rtc_nv_we = 0;
     t->rtc_set = 1; tick(); t->rtc_set = 0;
+    t->dump_start = 0; t->ld_we = 0;
+    if (!stf.empty()) {
+        // SDRAM and VRAM from the file; the CPU held (ce low) from reset, so nothing is in flight
+        // when its state is written
+        for (uint32_t a = 0; a < 0x2600000; a += 4) {
+            uint32_t w = stw(0x20000 + a);
+            for (int b = 0; b < 4; b++) sd[a + b] = w >> (24 - 8 * b);
+        }
+        memcpy(ddr.mem.data(), stf.data() + 0x2620000, 0x2000000);
+        t->ce = 0; t->reset = 0;
+        tick();
+        auto poke = [&](int sel, uint32_t v) { t->dbg_we = 1; t->dbg_wsel = sel; t->dbg_wdata = v; tick(); t->dbg_we = 0; };
+        for (int k = 0; k <= 62; k++) if (k != 53 && k != 58) poke(k, stw(0x1000 + 4 * k));
+        poke(58, stw(0x1000 + 4 * 58));     // after 52, which sets both
+        poke(53, stw(0x1000 + 4 * 53));
+        fprintf(stderr, "state %s: PC %08X\n", state_f.c_str(), stw(0x1000 + 4 * 37));
+    }
     t->reset = 0;
 
     // mount both discs
@@ -254,12 +329,18 @@ int main(int argc, char **argv) {
     t->img_mounted = 0;
 
     struct Req { bool on = false; int wait = 0; };
-    Req cr_, mr, wr, vr;
+    Req cr_, mr, wr;
     // the slots: a request's state
     struct Sd { int state = 0; long wait = 0; uint64_t off = 0; int words = 0, w = 0; } sdq[2];
     int sd_active = -1;
 
     uint64_t cyc = 0, frame_clk = 0;
+    int dump_state = 0;                 // 1 started, 2 held and written
+    // +state's device blocks: 0 waiting for the mounts, 1 writing, 2 done
+    int ld_phase = stf.empty() ? 2 : 0, ld_i = 0, served[2] = {0, 0};
+    long ld_wait = 0;
+    // the register-block words +state writes (fb_board st_a): the devices, ATAPI to the DCR store
+    const uint32_t ld_lo = 0x100, ld_hi = 0x600;
     long frames = 0;
     bool vb = false;
     long dev_total = 0;
@@ -270,10 +351,10 @@ int main(int argc, char **argv) {
             if constexpr (std::is_same_v<std::decay_t<decltype(os)>, VerilatedSave>) os.write(p, n);
             else os.read(p, n);
         };
-        raw(sd.data(), sd.size()); raw(vram.data(), vram.size() * 4);
+        raw(sd.data(), sd.size()); ddr.io(raw, out);
         raw(&cyc, sizeof cyc); raw(&frame_clk, sizeof frame_clk); raw(&frames, sizeof frames); raw(&vb, sizeof vb);
         raw(&dev_total, sizeof dev_total); raw(&anchor_rtl, sizeof anchor_rtl); raw(sdq, sizeof sdq); raw(&sd_active, sizeof sd_active);
-        Req *rs[4] = {&cr_, &mr, &wr, &vr};
+        Req *rs[3] = {&cr_, &mr, &wr};
         for (Req *r : rs) raw(r, sizeof *r);
         // the streams by name: which exist depends on how much of MAME's log was read (+frames)
         auto one = [&](Stream &q) {
@@ -298,7 +379,13 @@ int main(int argc, char **argv) {
     }
     while (frames < frames_max && !Verilated::gotFinish()) {
         t->clk = 0;
-        t->c_ack = 0; t->m_ack = 0; t->w_ack = 0; t->v_ack = 0;
+        if (reset_at >= 0 && cyc >= (uint64_t)reset_at && !cr_.on && !mr.on && !wr.on && sd_active < 0) {
+            fprintf(stderr, "board reset at clock %llu\n", (unsigned long long)cyc);
+            reset_at = -1; reset_left = 16;
+        }
+        t->reset = reset_left > 0;
+        if (reset_left > 0) reset_left--;
+        t->c_ack = 0; t->m_ack = 0; t->w_ack = 0;
         if (cr_.on && cr_.wait == 0) {
             uint32_t a = (uint32_t)t->c_addr << 4;
             if (t->c_we) for (int k = 0; k < 4; k++) for (int b = 0; b < 4; b++) sd[a + 4 * k + b] = t->c_wdata[k] >> (24 - 8 * b);
@@ -316,17 +403,13 @@ int main(int argc, char **argv) {
             else t->w_rdata = be32(&sd[a]);
             t->w_ack = 1; wr.on = false;
         }
-        if (vr.on && vr.wait == 0) {
-            if (t->v_we) vram[t->v_addr] = t->v_wdata; else t->v_rdata = vram[t->v_addr];
-            t->v_ack = 1; vr.on = false;
-        }
         // the slots (hps_io): one request at a time, ~0.5 ms before its data, then a word every 4 clocks
         t->sd_buff_wr = 0;
         for (int d = 0; d < 2; d++) {
             Sd &q = sdq[d];
             uint32_t lba = d ? t->sd_lba1 : t->sd_lba0;
             int cnt = d ? t->sd_blk_cnt1 : t->sd_blk_cnt0;
-            if (q.state == 0 && (t->sd_rd >> d & 1) && sd_active < 0) { q.state = 1; q.wait = 33000; q.off = (uint64_t)lba * 512; q.words = (cnt + 1) * 256; q.w = 0; sd_active = d; }
+            if (q.state == 0 && (t->sd_rd >> d & 1) && sd_active < 0) { q.state = 1; q.wait = sd_wait(); q.off = (uint64_t)lba * 512; q.words = (cnt + 1) * 256; q.w = 0; sd_active = d; }
             else if (q.state == 1 && --q.wait <= 0) { q.state = 2; t->sd_ack |= 1 << d; q.wait = 0; }
             else if (q.state == 2) {
                 if (++q.wait >= 4) {
@@ -336,7 +419,7 @@ int main(int argc, char **argv) {
                     t->sd_buff_wr = 1;
                     if (++q.w == q.words) q.state = 3;
                 }
-            } else if (q.state == 3) { t->sd_ack &= ~(1 << d); q.state = 0; sd_active = -1; }
+            } else if (q.state == 3) { t->sd_ack &= ~(1 << d); q.state = 0; sd_active = -1; served[d]++; }
         }
         // vblank as MAME's screen: 59.94 Hz (25.175 MHz, 525 lines, 45 blank) or 58.49 Hz (16.6666 MHz,
         // 416 lines, 32 blank), from control_w bit 0
@@ -347,6 +430,15 @@ int main(int argc, char **argv) {
         if (frame_clk >= period) frame_clk = 0;
         bool v = frame_clk >= vstart;
         t->vblank = v;
+        t->ld_we = 0;
+        if (ld_phase == 0 && served[0] && served[1] && sd_active < 0 && ++ld_wait > 1000) { ld_phase = 1; ld_i = ld_lo; }
+        if (ld_phase == 1) {
+            t->ld_we = 1; t->ld_a = ld_i; t->ld_d = stw(0x1000 + 4 * ld_i);
+            if (++ld_i == (int)ld_hi) {
+                ld_phase = 2; t->ce = 1;
+                fprintf(stderr, "state: device blocks loaded at clock %llu; the CPU runs\n", (unsigned long long)cyc);
+            }
+        }
         t->eval();
 
         if (anchor_rtl < 0 && anchor_idx > 0 && (long)st["ATA_W"].pos >= anchor_idx) {
@@ -401,10 +493,30 @@ int main(int argc, char **argv) {
         if (t->c_req && !cr_.on && !t->c_ack) { cr_.on = true; cr_.wait = lat - 1; }
         if (t->m_req && !mr.on && !t->m_ack) { mr.on = true; mr.wait = lat - 1; }
         if (t->w_req && !wr.on && !t->w_ack) { wr.on = true; wr.wait = lat - 1; }
-        if (t->v_req && !vr.on && !t->v_ack) { vr.on = true; vr.wait = 0; }
+        ddr.sample(t);
         t->clk = 1; t->eval();
-        for (Req *r : {&cr_, &mr, &wr, &vr}) if (r->on && r->wait > 0) r->wait--;
+        ddr.drive(t);
+        for (Req *r : {&cr_, &mr, &wr}) if (r->on && r->wait > 0) r->wait--;
         cyc++;
+        if (dump_state == 1 && t->dump_start) t->dump_start = 0;
+        else if (dump_state == 1 && t->dump_held) {
+            std::string f = bdir + "dump_" + std::to_string(frames) + ".bin";
+            FILE *o = fopen(f.c_str(), "wb");
+            fwrite(ddr.dump.data(), 8, ddr.dump.size(), o);
+            fwrite(ddr.mem.data(), 8, ddr.mem.size(), o);
+            fclose(o);
+            const uint8_t *dp = (const uint8_t *)ddr.dump.data();
+            long bad = 0;
+            for (uint32_t a = 0; a < 0x2600000; a += 4) {
+                const uint8_t *q = dp + 0x20000 + a;
+                uint32_t w = q[0] | q[1] << 8 | q[2] << 16 | (uint32_t)q[3] << 24;
+                if (w != be32(&sd[a]) && bad++ < 4) fprintf(stderr, "dump: SDRAM %07X %08X, the bench's %08X\n", a, w, be32(&sd[a]));
+            }
+            const uint32_t *h = (const uint32_t *)dp, *r = (const uint32_t *)(dp + 0x1000);
+            fprintf(stderr, "dump at frame %ld, clock %llu: %s, count %u, PC %08X, LR %08X, MSR %08X; SDRAM %ld words differ\n",
+                    frames, (unsigned long long)cyc, f.c_str(), h[1], r[37], r[33], r[36], bad);
+            t->dump_start = 1; dump_state = 2;
+        } else if (dump_state == 2) { t->dump_start = 0; dump_state = 3; }
         if (v && !vb) {
             frames++;
             if (frames == save_at) {
@@ -416,6 +528,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "saved %s\n", f.c_str());
             }
             if (frames % 50 == 0) fprintf(stderr, "frame %ld: PC %08X, %ld device accesses compared\n", frames, t->dbg_pc, dev_total);
+            if (frames == dump_at) { t->dump_start = 1; dump_state = 1; }
         }
         vb = v;
     }

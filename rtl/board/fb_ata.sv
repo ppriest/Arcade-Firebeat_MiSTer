@@ -11,6 +11,7 @@
 module fb_ata (
     input  logic        clk,
     input  logic        reset,
+    input  logic        por,            // power-on: the slots' discs survive a board reset
 
     input  logic        req,            // held until ack
     input  logic        we,
@@ -33,6 +34,12 @@ module fb_ata (
 
     output logic [1:0]  play_on,
     output logic [31:0] play_lba [2],
+    output logic [1:0]  check,          // [Firebeat] a drive's CHECK CONDITION (fb_atapi check), the state dump's trigger
+    output logic [3:0]  check_key [2],
+    input  logic [7:0]  st_a,           // [Firebeat] the drives' register blocks (fb_atapi), drive st_a[7]
+    output logic [31:0] st_d,
+    input  logic        st_we,
+    input  logic [31:0] st_wd,
     output logic        bad
 );
 
@@ -67,6 +74,9 @@ logic [3:0]  toc_ctl [2];
 logic [9:0]  bw_a [2];
 logic [15:0] bw_d [2];
 
+logic [31:0] st_dd [2];
+assign st_d = st_dd[st_a[7]];
+
 genvar d;
 generate for (d = 0; d < 2; d++) begin : g_drv
     fb_atapi #(.CSEL(d[0])) u_drv (
@@ -78,10 +88,13 @@ generate for (d = 0; d < 2; d++) begin : g_drv
         .toc_start(toc_start[d]), .toc_audio(toc_audio[d]), .toc_ctl(toc_ctl[d]),
         .rq(rq[d]), .rq_lba(rq_lba[d]), .rq_half(rq_half[d]), .rq_done(rq_done[d]),
         .bw_we(bw_we[d]), .bw_a(bw_a[d]), .bw_d(bw_d[d]),
-        .play_on(play_on[d]), .play_lba(play_lba[d]), .vol0(), .vol1(), .bad(bad_d[d])
+        .play_on(play_on[d]), .play_lba(play_lba[d]), .vol0(), .vol1(),
+        .check(check[d]), .check_key(check_key[d]),
+        .st_a(st_a[6:0]), .st_d(st_dd[d]), .st_we(st_we && st_a[7] == d[0]), .st_wd,
+        .bad(bad_d[d])
     );
     fb_cd_slot u_slot (
-        .clk, .reset,
+        .clk, .reset(por), .brd_reset(reset),
         .mounted(img_mounted[d]), .img_size,
         .sd_lba(sd_lba[d]), .sd_blk_cnt(sd_blk_cnt[d]), .sd_rd(sd_rd[d]), .sd_ack(sd_ack[d]),
         .sd_buff_wr, .sd_buff_dout,

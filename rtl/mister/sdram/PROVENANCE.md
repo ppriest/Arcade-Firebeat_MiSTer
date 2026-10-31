@@ -10,7 +10,8 @@ Edits here are marked `[Firebeat]`: tRCD, CAS latency and the refresh interval a
 parameters (defaults 3, 3, 500 clocks) for the controller at 133.33 MHz; port 0's quad read
 (`quad0`: READs at +0, +4, +8, +12 to one open row, the last precharging; 16 halfwords in
 `dout0`..`dout0d`, 32 bytes) for the DMA's block reads; a second data register, `dq_in2`, between
-the I/O cell's `dq_in` and the read lanes, for setup at 133.33 MHz (reads one clock longer). Hornet's interval, 335
+the I/O cell's `dq_in` and the read lanes, for setup at 133.33 MHz (reads one clock longer). `dq_out` loads every clock through one mux on a registered select, and the command
+(`cmd_nx`) is decoded a clock early, so the paths to the I/O cells carry no state decode. Hornet's interval, 335
 clocks a refresh alternating between the two chips (670 a chip), was set for KonamiGX's 96 MHz.
 
 `sim/common/sdram_chip_model_128.sv` and `sdram_chip_model_wide.sv` are Hornet's command-decoding

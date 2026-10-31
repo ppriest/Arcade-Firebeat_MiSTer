@@ -1,7 +1,7 @@
 # Konami Firebeat — MiSTer Core Roadmap
 
 **Scope: ParaParaParadise, first set `ppp11` (user decisions). Phase 0 closed; phases 1-7
-approved by the user; Phase 1 in progress.** A phase whose scope changes goes back for approval.
+approved by the user; Phase 1's exit met on the board; Phase 2's exit met in simulation, awaiting acceptance; the Phase 5 timing gate met.** A phase whose scope changes goes back for approval.
 
 ## Context
 
@@ -26,7 +26,7 @@ from the previous cores are in [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md); worki
 
 ## Progress
 
-**Phase 0 closed on ppp11; phases 1-7 approved; Phase 1's exit met on the board; Phase 2 in progress.**
+**Phase 0 closed on ppp11; phases 1-7 approved; Phase 1's exit met on the board; Phase 2's exit met in simulation, awaiting acceptance; the Phase 5 timing gate met (seed 2, every clock positive).**
 
 Phase 1 so far, each with its evidence:
 
@@ -47,14 +47,33 @@ Phase 2 so far:
 | PPC caches (I 16 KB, D 8 KB, write-back) and the cache instructions | sim matches MAME | `sim/cpu_tb`: play window 2,000,000 and loading window 1,777,257 instructions; dcbf disabled fails |
 | DMA controller | sim matches MAME | `sim/cpu_tb`, `sim/board_tb`: 295,756 DMA words to the GCU as MAME's |
 | board: bus, serial port and DS1991, RTC65271, flash x 3, GCU and YMZ280B shells | sim matches MAME on the windows | `sim/board_tb`: 302,908 device accesses in order |
-| ATAPI drives x 2 on the image slots, TOC block from MiSTer_Firebeat | written; boot run under way | `sim/boot_tb`; `chd_raw_check`: frames and TOC as .bin and .cue |
-| boot from power-on against MAME | under way | `sim/boot_tb`, `scripts/mame_boot_capture.py` |
+| PC16552D, registers only | written | `sim/boot_tb`: the DUART streams match MAME's; HACKS |
+| ATAPI drives x 2 on the image slots, TOC block from MiSTer_Firebeat | written; serve the BIOS's disc load | `sim/boot_tb`; `chd_raw_check`: frames and TOC as .bin and .cue |
+| the board in `firebeat_sys`: inputs, HPS time, NVRAM file (6 MB flash + the RTC's 4,152 bytes), VRAM on DDR3 | sim passes | `sim/sys_tb` step 6 boots the real BIOS; the NVRAM upload while running matches the flash |
+| boot from power-on against MAME, installed NVRAM | startup check passes; through the game's load | `sim/boot_tb` on `debug/ppp11-boot` (6,000 MAME frames): every ATA access (7,098,647 data words), the serial port, RTC and flash streams equal to MAME's; the board then runs the game's code. Two fixes on the way: the serial port's interrupts only where MAME updates them (`fb_spu`, MAME_KLUDGES), the bench's RTC loaded after power-on (boot_tb `por`). Still differing: GCU data (not drawn until Phase 3) and lamp timing |
+| SOUND FLASH INIT from blank NVRAM, with MAME's Test-mode presses | flash equal to MAME's | `sim/boot_tb` on `debug/ppp11-flashinit` (6,800 MAME frames, 70 min): all 15,244,959 flash writes in MAME's order, the three chips equal to MAME's at the end (`scripts/flash_compare.py`). The erase-status reads differ in count only: the 1 s sector erase is polled fewer times by the board's slower loop |
+| stage2 frames within frame time | **not met** | the 94.7% / 92.6% measured a run that dropped half the GCU's DMA words; every transfer done, 143.1% of a frame with one DDR3 write per VRAM word, 101.3% with them gathered into bursts (HARDWARE_NOTES "DMA beside the CPU") |
+| `docs/STATE.md` | every RAM and register file listed | STATE.md |
+| rbf with the board | built, timing met | fits at 69% of ALMs (28,947) and 35,888 registers; fitter seed 2 closes `clk_sys` at +0.036 ns and the SDRAM 133 MHz clock at +0.607 ns (`debug/build_HEAD_s2_rerun.log`, `build/BUILT_COMMIT`); the same commit fails the SDRAM clock at seeds 5-8 (HARDWARE_NOTES "Timing closure for the full design") |
+
+**Phase 2's exit is met in simulation**, for the user's acceptance. The BIOS's "EXEC: OK" is
+inferred, not seen: nothing is drawn before Phase 3; the board gets through the whole disc load
+as MAME does and runs the game's code after it.
+
+Phase 3 so far:
+
+| Item | State | Evidence |
+|---|---|---|
+| command engine: FIFOs, display lists, fill, object blit (scale, flip, blend, transparency), characters, origin | sim matches MAME | `sim/gcu_tb`: attract and play windows, VRAM 0 pixels differing; 8 random windows; 23 mid-command resets (HARDWARE_NOTES "GCU command engine"); `sim/boot_tb` with the engine in: every ATA data word (7,098,647) equal to MAME's and the same first divergences as without it (`debug/ppp11-boot/rtl_run_gcu.log` against `rtl_run.log`) |
+| play window's commands against frame time | 47.8% of 8 frames at lat 20; 56.1% at lat 40 with 20% busy beside the display | same section |
+| display: four contexts, CRTC, scan-out | sim matches MAME | `sim/disp_tb`: both windows' screens, 24 random register sets; `sim/gcu_tb +scan=1`: the shown frame equals `screen_out` after the replay (HARDWARE_NOTES "GCU display") |
+| rbf with the engine and display | built, timing met; on the board: E121 at the BIOS's GCU RAM test, reproduced in `sim/sys_tb` and fixed there (HARDWARE_NOTES "DMA beside the CPU"); not rebuilt | commit `798a5df`, fitter seed 5: every clock positive (`clk_sys` +0.457, SDRAM +0.276, HDMI +0.165 ns), 32,029 ALMs (76%); seeds 1-4 miss (HARDWARE_NOTES "Timing closure for the full design") |
 
 Phase 0's results, each with its section in HARDWARE_NOTES:
 
 | Item | Result | Section |
 |---|---|---|
-| 0, reference MAME | `firebeat.exe` from `E:/mame-firebeat` (branch `firebeat-meas`: per-frame GCU counters as outputs, a CD-audio mute switch); `mister.env` points at it | ROADMAP history, `mister.env` |
+| 0, reference MAME | `firebeat.exe` from `E:/MAME-Checkouts/mame-firebeat` (branch `firebeat-meas`: per-frame GCU counters as outputs, a CD-audio mute switch); `mister.env` points at it | ROADMAP history, `mister.env` |
 | 1, workload | install from Test mode; 512x384 at 58.6 Hz in the 24 kHz mode; VRAM the whole 32 MB, 196-236 MB/s in play; work RAM to the top of 32 MB; game loop 5-15% of 66 MHz median, 44% peak; loading (LZSS) 86-99% in runs; program CD READ(10) ≤256 KB, 102 KB/s in play; music as CD audio | "Measured in MAME: ppp11", "Play" |
 | 2, CD path | two image slots from an `.mra`; raw images 4.66 MB/s one slot, 2.25 each both; CHDs through `MiSTer_Firebeat` byte-identical to the .bin, 1.42 MB/s each both, worst first word 43 ms | "CD path on the board" |
 | 3, PPC | 4.3k ALMs, 77 MHz Fmax alone; agrees with MAME over 2 M stage2 instructions; with GCX-sized caches 84-93% of 66 MHz in the heaviest game-loop frames; the game feeds the GCU by on-chip DMA | "PPC core on ppp11" |
@@ -205,7 +224,9 @@ Each phase ends with a commit, a bench fed from MAME, and its exit check run.
 ### Phase 5 — On the board
 
 - `build_staged.py` and `deploy.py` (timing met on every clock, no feature on a failing build);
-  `ppp11` installs from Test mode, boots, plays attract and a stage.
+  `ppp11` installs from Test mode, boots, plays attract and a stage. The timing gate is met:
+  `clk_sys` +0.036 ns, SDRAM +0.607 ns, seed 2 (HARDWARE_NOTES "Timing closure for the full
+  design").
 - **Probes**: per-frame PPC busy and memory latency, DDR3 and SDRAM queue depths, GCU frame
   overruns, CD request waits. A state dump to a file the Phase 2 bench loads.
 - **Exit**: `ppp11` plays through a stage with the sensors, the frame rate held, the probes
@@ -242,6 +263,7 @@ Each phase ends with a commit, a bench fed from MAME, and its exit check run.
 | caches, I 16 KB + D 8 KB | 24 KB | block RAM | |
 | CD request buffers | 2 x 2 x 16 KB | block RAM | |
 | line FIFO for scan-out | a few lines | block RAM | |
+| state dump (diagnostic) | ~38 MB + 64 KB | DDR3 0x34000000, written only while the board is frozen for a dump | none in play |
 
 DDR3 during play carries VRAM because no SDRAM clock the board can reach carries 236 MB/s beside
 the CPU (HARDWARE_NOTES, "Memory plan inputs"). An SDRAM module of 64 MB or more is required.
@@ -288,6 +310,12 @@ the CPU (HARDWARE_NOTES, "Memory plan inputs"). An SDRAM module of 64 MB or more
   GCU's VRAM in DDR3 during play (user, after item 5).
 - **YMZ280B written from MAME's model** (user, after item 4).
 - **Phases 1-7 approved as written** (user, after Phase 0).
+- **Board state dump for the benches** (user, for E202): from the OSD's hidden page, by hand or on
+  a drive's first CHECK CONDITION. The board freezes (CPU at an instruction boundary, GCU, DMA and
+  slots idle, D-cache written back), copies work RAM and flash to DDR3 0x34000000 with every
+  register block in `docs/STATE.md`, and stays paused; the HPS copies that and the VRAM to a file.
+  `sim/boot_tb +state=FILE` loads it. No restore on the board; restore ports exist in simulation
+  only.
 - **The installed flash (6 MB) and RTC NVRAM (4 KB) persist as the core's NVRAM files** through
   hps_io, so the Test-mode install runs once per set (user, with the phase approval).
 

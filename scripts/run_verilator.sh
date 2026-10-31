@@ -25,6 +25,11 @@ set -euo pipefail
 TB="${1:?usage: scripts/run_verilator.sh <testbench-dir-name> [-Gparam=v] [plusargs...]}"
 shift
 
+if [ -z "${RUN_VERILATOR_GATED:-}" ]; then
+	python scripts/hwlock.py --require-no-jtag "verilator $TB ($(basename "$(pwd)"))" || exit 1
+	export RUN_VERILATOR_GATED=1
+fi
+
 # MSYS2 holds verilator/g++/make/perl on Windows. Probed, not assumed: set
 # MSYS2_ROOT if it lives somewhere else.
 if ! command -v verilator >/dev/null 2>&1; then
@@ -34,7 +39,7 @@ if ! command -v verilator >/dev/null 2>&1; then
 	done
 	[ -n "$MSYS" ] || { echo "MSYS2 not found (verilator, g++, make, perl). Set MSYS2_ROOT."; exit 1; }
 	exec env MSYSTEM=MINGW64 CHERE_INVOKING=1 "$MSYS/usr/bin/bash.exe" -lc \
-		'cd "$1" && shift && exec scripts/run_verilator.sh "$@"' _ "$(pwd -W 2>/dev/null || pwd)" "$TB" "$@"
+		'cd "$1" && shift && RUN_VERILATOR_GATED=1 exec scripts/run_verilator.sh "$@"' _ "$(pwd -W 2>/dev/null || pwd)" "$TB" "$@"
 fi
 
 [ -d sys ] || { echo "run me from the repository root"; exit 1; }

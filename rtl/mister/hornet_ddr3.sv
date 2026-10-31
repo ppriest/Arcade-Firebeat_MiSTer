@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// DDR3 for the Voodoo: N 32-bit Avalon-MM masters (vraster's six, the picture's frame-buffer
-// reads) onto the 64-bit DDRAM port, all on clk. Two 32-bit beats share a 64-bit one, so the
-// Voodoo's 568k beats a frame take about a third of the clocks (ROADMAP, Phase 2 throughput).
+// DDR3 for the board's VRAM (Hornet's module, adapted): N 32-bit Avalon-MM masters onto the 64-bit
+// DDRAM port, all on clk. Two 32-bit beats share a 64-bit one, so 568k beats (Hornet's Voodoo
+// frame) take about a third of the clocks. Here three wide masters, as firebeat_sys wires them: the
+// board's VRAM words, the test picture's writes, and scan-out, which is served first; HARDWARE_NOTES
+// "Memory system benches" measures the worst play frame through them.
 //
-// Masters as vraster's (sim/board_tb's model): a read is one command with a burst count, its data
-// later at one word a clock (rvalid); a write is a burst, the count with the first beat, each beat
-// taken when waitn is high. Byte addresses, 32-bit aligned, absolute in the DDR3 space (vraster's
-// FB_BASE, TEX_BASE): DDRAM_ADDR is the address's bits 31:3, which reach the core's window at
-// 0x30000000 as they are. A burst is at most 509 words (255 beats).
+// Masters as vraster's in Hornet and as sim/vram_tb models them here: a read is one command with a
+// burst count, its data later at one word a clock (rvalid); a write is a burst, the count with the
+// first beat, each beat taken when waitn is high. Byte addresses, 32-bit aligned, absolute in the
+// DDR3 space: DDRAM_ADDR is the address's bits 31:3, which reach the core's window at 0x30000000 as
+// they are. A burst is at most 509 words (255 beats).
 //
 //   reads   one 64-bit burst covering the words, its tag (master, first half, word count) queued;
 //           the data comes back in order into a FIFO, from which the words go to their masters a
@@ -26,8 +28,8 @@ module hornet_ddr3 #(
     // and count an even number of words (padding words with byte enables off); a write takes
     // m_wdata/m_be (low word) and m_wdata_hi/m_be_hi together, a read returns m_rdata and m_rdata_hi
     parameter logic [N-1:0] WIDE = '0,
-    // a master served after N-1 and before the others' round (-1: none): the texture fills, which
-    // stall vraster's pipeline while they wait
+    // a master served after N-1 and before the others' round (-1: none): Hornet's texture fills,
+    // which stall vraster's pipeline while they wait; here the board's VRAM port
     parameter int PRI = -1
 ) (
     input  logic                 clk,

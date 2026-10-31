@@ -129,6 +129,142 @@ any relation between drawing and scan-out (MAME draws the whole frame from VRAM 
 update, G:532-550). MAME saves VRAM in its state (G:43), so a MAME savestate is the way to a
 reference VRAM image; `-debug` memory dumps cannot reach it.
 
+## GCU reference capture (Phase 3)
+
+The bench's reference is a window of GCU activity, not a savestate: `scripts/mame_vram_window.py`
+(`scripts/mame/vramwin.lua`) dumps the GCU's VRAM (save item 250), a shadow of the register file
+0x00-0xFF and the save items that mirror it, logs every write to `7E800000-7E8000FF` for eight
+frames, then dumps VRAM again, then MAME's screens for both ends. Two windows are kept:
+`debug/ppp11-vram3000` (attract, the BEMANI logo) and `debug/ppp11-vram21400` (play, stage 2,
+after `meas1`'s two coins and Start).
+
+Frame correspondence: MAME draws a frame's screen at the start of that frame, from the state the
+previous frame left (Video), so the screen belonging to the VRAM dumped at the end of frame N is
+frame N+1's; the capture runs one frame past the window for that reason. Checked both ways, in
+both windows: composing `vram_in` with the register file through k057714's `draw()` reproduces
+`screen_in.bin` bit-exactly (0 of 196,608 pixels differ), and the same for `vram_out` and
+`screen_out.bin`. Replaying the write log over `vram_in.bin` reaches `vram_out.bin` exactly once
+the commands are executed as well (a log-only replay misses every pixel the blits write).
+
+VRAM layout: a 32-bit word k holds pixels 2k and 2k+1 with the even pixel in the high half, so a
+word is `{pixel 2k, pixel 2k+1}` and the core's DDR3 word can be the game's port data unchanged.
+MAME reads `vram16[addr ^ 1]` on a little-endian host in both the display and the blitter
+(G:521, 741, 756, 787) because of that layout; the captured `.bin` files are big-endian 16-bit
+pixels indexed by pixel address, which is the same thing without the `^ 1`. A 1024-pixel pitch,
+14-bit rows, destinations bounded at 16 MB.
+
+Captured workload, per frame (the counters of G:547-566): attract 3 immediate commands, 2
+display-list calls, 5 entries, 1 object of 12,032 pixels; play 3, 2, 67 and 61 objects (474,965
+source pixels, 367,076 written, 40,503 blended), one full-screen fill (393,216 pixels), 264 FIFO
+words, 12 command words, and no characters yet (ppp does not use them; bm3 and kbm do).
+
+ppp's display state, the same in both windows, is the mode table's mode 1: registers 0x00
+`01FF0447` (512 visible, 5 front porch, 72 back porch), 0x04 `017F0515` (384, 6, 22), 0x08
+`5F030064` (96 hsync, 4 vsync): 685 x 416 total, 16.6666 MHz pixel clock, 24.3 kHz, 58.4875 Hz
+(measured: MAME reports 58.487507). Two 512x384 contexts are shown, bases 0x68400 and 0x68600
+(the game keeps a second pair at 0x8400 and 0x8600 and alternates them per frame), layer select
+`0041870F` (slots draw contexts 3, 1, 0, 2), alphas `0841` for the two contexts shown and `0843`
+for the two empty ones (blend 1 and 3, every alpha 16), and register 0x6C `0020`, which leaves
+inverse transparency off: bit 15 set is drawn.
+
+## GCU command engine (Phase 3)
+
+`rtl/board/fb_gcu.sv` behind `fb_gcu_shell`, on `hornet_ddr3`'s master 0 as a wide (64-bit,
+per-beat byte enable) master. `sim/gcu_tb` replays a captured window's register writes as fast as
+the GCU takes them over `sim/common/ddr3_model.h` (first read beat `lat` clocks after the command,
+`DDRAM_BUSY` `busy`% of clocks) and compares all of VRAM with MAME's `vram_out`.
+
+| Window | Settings | Clocks, % of 8 frames | VRAM pixels differing |
+|---|---|---|---|
+| attract (`ppp11-vram3000`) | lat 20, busy 10% | 1.0 | 0 of 16,777,216 |
+| play (`ppp11-vram21400`) | lat 20, busy 10% | 47.8 | 0 |
+| play | + the display (`fb_gcu_disp`, served first) | 48.7 | 0 |
+| play | + the display, lat 40, busy 20% | 56.1 | 0 |
+
+The clock count is the engine's time alone: the CPU's time between writes is not in the log, so
+the eight frames' commands are issued back to back. The object loop draws 4 pixels a clock;
+before it drew one, the same play rows were 81.1%, 84.2% and 92.3%.
+
+Random windows (`scripts/gcu_random.py --seed 1..8`, expected VRAM from `scripts/gcu_model.py`):
+0 differences each. A quarter of their objects read from on or near their own destination; with
+the source-row reuse check disabled, seeds 5 and 6 fail, so the check is covered.
+
+Reset in mid-command (`+rst=N`, 23 points from clock 7,001 to 4,187,815 of the play window, step
+190,037): the engine goes idle 9-153 clocks after the reset, with every burst `hornet_ddr3` took
+completed, and the replay from `vram_in` ends at 0 pixels differing each time.
+
+`sim/board_tb` on the play window with the engine in: the 302,908 device accesses still match
+MAME's. With the DMA beside the CPU (`+hold=0 +lat=13`) the stage-2 frames are 1,068,772 and
+1,044,196 clocks, as before the engine.
+
+## GCU display (Phase 3)
+
+`rtl/video/fb_gcu_disp.sv`: the CRTC from registers 0x00-0x08 and the four contexts composed a line
+ahead into a two-line buffer from DDR3 (hornet_ddr3's last master, served first). A line's build
+clears the buffer and reads each visible slot's row in 128-beat bursts; scan-out scales the pixel by
+its context's factor as it leaves.
+
+| Check | Result |
+|---|---|
+| `sim/disp_tb` on both captured windows, both ends (registers set directly) | 0 of 196,608 pixels differ from MAME's screen, each; also at lat 60, busy 30% |
+| `sim/disp_tb` on 24 random register sets (`scripts/disp_random.py`: modes 0-2, repeated slots, edges, unaligned bases, blend modes, 0x6C) over a random VRAM | 0 differ each; 21 of the 24 expected screens are not black |
+| mutations, 24 seeds each: mode 2 as mode 0; the beat offset ignored; one row fewer; 0xFFF as inverse | 7, 13, 11 and 4 seeds fail |
+| `sim/gcu_tb +scan=1`: the engine replays the window while the display runs on the shell's registers | play and attract: VRAM 0 differ and the frame shown 0 of 196,608 from `screen_out`, no late line |
+| `sim/sys_tb` steps 4-5, the test picture through the display | 0 wrong, frame 1,139,840 clocks, no late line |
+| `Firebeat_30000006.rbf` (`798a5df`, seed 5) on the board, `hw.py launch` ppp11 | 640 x 480 black at 1 s and 16 s; at 48 s mode 1 (512 x 384) and the startup check drawn with **E121: VRAM ERROR** in red, much of the text missing or replaced by vertical bars (`docs/screenshots/phase3_e121_vram_error.png`, identity `Firebeat|Firebeat|ppp11|`). MAME on a blank board stops at E160 and E124, not E121 |
+| `Firebeat_30000007.rbf` (`20d7e03`, seed 5) on the board, `hw.py launch` ppp11, identity `Firebeat|Firebeat|ppp11|` | at 50 s and 90 s the startup check with MAIN ROM to UART OK and RTC PASS, the ATAPI lines blank and the counter running (1806, 4144), as `sys_tb` without discs shows (`docs/screenshots/phase3_bursts_atapi_wait.png`); no E121 |
+| the same, both CHDs mounted from the OSD, then its "Reset and close OSD" | **E140: ATAPI INIT ERROR** again: `fb_cd_slot` read a disc's TOC only at the mount and the board reset cleared it, so the drives were empty |
+| the same, the core reloaded and the CHDs mounted before the BIOS's ATAPI check | ATAPI passes; **E160 BACKUPRAM ERROR** and **E124 FLASH DATA ERROR**: the device's NVRAM file was Phase 1's random one, and its `.mra` declared 6,295,552 bytes, 56 short of the RTC's 4,152 |
+| the same, after the user ran the sound-NVRAM init and the settings reset | the game's title screen (`docs/screenshots/phase3_ppp11_title.png`) |
+
+## DMA beside the CPU: E121 on the board
+
+The board's E121 (above) is the BIOS's GCU RAM test, reproduced by `sim/sys_tb` step 6 (the real
+BIOS on `firebeat_sys`, `+frames=2250 +shot=`): the same ERROR line, E121 and broken glyphs
+(`docs/screenshots/sys_tb_e121_repro.png`). `sim/boot_tb` passes the test because it holds the CPU during DMA
+(`dma_hold`), which the hardware core does not.
+
+Every transfer is DMA channel 3 (DCR 0xD8-0xDB) to a GCU port. With the DMA beside the CPU the
+GCU's status showed the fed port busy, so the BIOS took the other port and rewrote channel 3's
+DA, SA and CT while it still ran (`sys_tb +io`, `D` lines with the busy flag set); `fb_ppc_dma`
+read them live, so the running transfer ended at its 72nd of 128 words, its remaining words went
+to the other port, and the new DMACR start was dropped. The bench's VRAM reads all equal what its
+own logged port writes put there (286 of 286): the words were never sent, not lost on the way.
+
+Fix (`fb_board`, `dma_wait`): the CPU waits for the transfer's end at a DMA register access.
+`board_tb` on the play window (`+lat=13 +hold=0 +nocheck`, sim-only counters in `fb_ppc_dma`):
+
+| RTL | words to the GCU | starts dropped | writes to the running channel | clocks, 2,000,000 instructions |
+|---|---|---|---|---|
+| before (`80c65cd`) | 147,763 | 1,729 | 6,916 | 5,158,101 |
+| `dma_wait` | 295,756 | 0 | 0 | 9,443,215 |
+| CPU held for every transfer (`+hold=1`) | 295,756 | 0 | 0 | 9,443,215 |
+
+MAME's capture of the window has 297,836 port writes, nearly all in mode `00FF` (VRAM words).
+So "The board on the play window" measured a run that dropped half the game's GCU data. With every
+transfer done, the DMA waited mostly for the GCU's queue: `fb_gcu` wrote each queued VRAM word as its
+own one-beat DDR3 write.
+
+These runs, and those in "The board on the play window", had a bench fault: `board_tb`'s register pokes clocked the board without the DDR3
+model, so `hornet_ddr3` took a read beat twice (LESSONS_LEARNED, "Every path that clocks the DUT").
+With the bench fixed, `+idle` as in "The board on the play window":
+
+| `fb_gcu` VRAM words | clocks, 2,000,000 instructions | DMA waiting for the GCU | work a frame | of 1,128,205 |
+|---|---|---|---|---|
+| one DDR3 write each (`9da5663`) | 7,703,312 | 2,160,595 | 1,614,983 | 143.1% |
+| gathered into bursts of up to 128 beats | 6,286,715 | 743,998 | 1,142,784 | 101.3% |
+
+The burst runs: `+hold=1` compares 302,908 of 304,999 device accesses, as before; `sim/gcu_tb` on
+both windows (`+lat=40 +busy=20 +gap=30 +scan=1`) and the 8 random windows: VRAM 0 pixels differ,
+screen 0. `sys_tb` step 6 to frame 2250: the frame equals `sys_tb_boot_dma_wait.png` pixel for pixel;
+the 8,192 VRAM reads equal MAME's and the first port-0 difference is again entry 106,512.
+
+`sys_tb` step 6 with the fix (`+lat=40 +busy=20 +frames=2250`): MAME's boot screen, every test up to
+UART OK (`docs/screenshots/sys_tb_boot_dma_wait.png`; no discs in this bench, so the ATAPI lines stay
+blank); `scripts/compare_io.py` against `debug/ppp11-boot/io.txt`: the BIOS's 8,192 VRAM reads equal
+MAME's, port 1 unused as in MAME, the first port-0 difference at entry 106,512 (MAME frame 1071), the
+on-screen counter, where `boot_tb` differs too.
+
 ## Memory map
 
 PPC403GCX, 31-bit physical address, big-endian (F:774-797; DRC fast RAM covers all 32 MB, F:704):
@@ -247,7 +383,7 @@ slot mechanism; libchdr reads both kinds.
 
 ## Measured in MAME: ppp11
 
-Reference MAME `firebeat.exe` (`E:/mame-firebeat`, ROADMAP "Progress"); CHDs from
+Reference MAME `firebeat.exe` (`E:/MAME-Checkouts/mame-firebeat`, ROADMAP "Progress"); CHDs from
 `F:/Emulation/roms/MAME CHDs/ppp11`; headless, `scripts/mame/gcu_stats.lua` writing the GCU
 counters per frame and pressing inputs at given frames. Per-frame figures are MAME's model: the
 GCU does every command in the register write, so they are work per frame, not timing.
@@ -608,7 +744,7 @@ blend rows, uploads) issued one row at a time, each waiting for the last, beside
 | 40, 20% | 67.6 | 0 | 661 |
 
 The blitter here does nothing between rows; the GCU's own per-pixel work overlaps the next
-row's fetch or adds to these figures, which Phase 4 measures.
+row's fetch or adds to these figures, which Phase 3 measures.
 
 ## Phase 1 on the board
 
@@ -637,17 +773,117 @@ missed by 0.039 ns with seed 1, on the state-to-DQ8/DQ11 output paths. The margi
 `sim/board_tb` on the stage2 window (frame 21357, 2,000,000 instructions): the board's clocks
 between MAME's vblank interrupts, split by the RTOS's idle task (`+idle`, HARDWARE_NOTES "Play").
 SDRAM answered +lat clocks after a request; the DMA writes the GCU directly at about 2.2 clocks a
-word (`fb_ppc_dma` direct path).
+word (`fb_ppc_dma` direct path). The runs:
+
+    scripts/run_verilator.sh board_tb +win=debug/ppp11-win21357 +n=2000000 +lat=N +hold=0 +nocheck \
+        "+idle=80044C00-80046DFF,80000B00-80000EFF,80051350-80051450,80051E80-80051FFF"
+
+with `+hold=1` (MAME's order, and device accesses compared) for the first row.
 
 | DMA | lat | Work clocks, frame 1 / frame 2 | of 1,128,205 |
 |---|---|---|---|
 | holding the CPU (MAME's order) | 12 | 1,366,379 / 1,341,260 | 121% / 119% |
 | beside the CPU (the hardware core) | 12 | 1,059,381 / 1,035,878 | 94% / 92% |
+| beside the CPU (the board's measured fill latency) | 13 | 1,068,773 / 1,044,197 | 94.7% / 92.6% |
 | beside the CPU | 20 | 1,134,585 / 1,102,474 | 101% / 98% |
+
+At the board's 13.2-clock average fill latency (`+lat=13`) the stage2 window's two frames take
+94.7% and 92.6% of their frame time: they finish inside it, which is Phase 2's exit for this
+window. The DMA in MAME's order does not fit; the hardware core's setting does.
 
 At latency 1 the work is 79.5% of the window's clocks per vblank: most of the cost is the core's
 own CPI (2.40 at one-clock memory). The board's SDRAM fill latency on hardware is 13.2 clocks
 average ("Phase 1 on the board").
+
+## Timing closure for the full design (Phase 2 to Phase 5)
+
+`build_staged.py` compiles the whole board (framework, DDR3 video path, PPC with caches, GCU, ATAPI,
+SDRAM controller) and gates on every clock in the STA summary. The design is 28,681-28,923 ALMs
+(68-69% of 41,910), 35,887-36,140 registers, 127 M10Ks, 36/112 DSPs, three PLLs.
+
+Two clocks decide it: `clk_sys` at 66.67 MHz (emu PLL output 0, 15.000 ns) and the SDRAM domain at
+133.33 MHz (output 1, 7.500 ns).
+
+**`clk_sys` was structural.** At commit `096c157` it missed at seeds 1, 3 and 5 (-0.074, -0.074,
+-0.023 ns), always on the same path: the instruction cache's read address
+(`fb_cache:u_ic|ra[4]`, `[5]`) through its line mux to `i_rdata`, then the CPU's fetch bypass
+(`nh`), the GPR read and `o_v[2][25]`. The mux forwards the last write's data and tag into a lookup
+of the same set in the same clock; the data cache needs that, the instruction cache cannot reach it
+(`we` tied low, and a fill ends in C_DONE before the next request is taken, so the RAM has seen the
+write an edge before the lookup's read address). `fb_cache` took an `FWD` parameter, 0 on `u_ic`
+(commit `bc6f934`); same seed 5, `clk_sys` went from -0.023 to +0.268 ns.
+
+**The SDRAM domain is a placement lottery.** Its failing paths are all
+`sdram:u_sdram|state[*]`/`mode[0]`/`we` to `dq_out[6]/[8]/[11]`: the write-data load mux against a
+DDIO output register. Seeds move it by more than a nanosecond in either direction on the same
+commit. It is closed with the fitter seed, as the standing rule requires:
+
+| Seed | `clk_sys` | SDRAM 133 MHz | Result |
+|---|---|---|---|
+| 2 | +0.036 | +0.607 | **met** -- the artifact |
+| 5 | +0.268 | -0.634 | SDRAM fails |
+| 6 | +0.330 | -0.625 | SDRAM fails |
+| 7 | +0.469 | -0.374 | SDRAM fails |
+| 8 | +0.378 | -0.224 | SDRAM fails |
+
+Five seeds tried; one passes. The SDRAM domain's spread (from +0.607 to -0.634) is the whole
+decision, and the seed is chosen for it, not for `clk_sys`: seed 2 has the least `clk_sys` margin
+of the five and the only positive SDRAM one.
+
+`build/BUILT_COMMIT` records the seed with the commit, so every `.rbf` names its placement.
+
+**With the GCU engine and display (Phase 3).** 31,441-31,691 ALMs (75-76%), 40,204-40,616
+registers, 143 M10Ks, 49 DSPs.
+
+| Commit | Seed | `clk_sys` | SDRAM 133 MHz | Worst `clk_sys` path |
+|---|---|---|---|---|
+| `9380597` | 2 | -5.590 | +0.375 | `fb_gcu_disp` slot setup in one clock (fixed in `9bd66f9`) |
+| `9bd66f9` | 2 | -0.631 | -0.141 | `fb_cache:u_dc\|r_addr[28]` to `ppc403_core\|o_v[0][*]` (the ack through the next head's register reads; fixed in `d8f1deb`) |
+| `d8f1deb` | 2 | +0.207 | -0.308 | met; the HDMI PLL's domain (`sys/`) also fails, -0.258 |
+| `798a5df` (RTL of `d8f1deb`) | 1 | -0.142 | -0.356 | |
+| | 3 | +0.213 | -0.079 | |
+| | 4 | +0.429 | -0.249 | |
+| | 5 | +0.457 | +0.276 | **met on every clock** (HDMI +0.165); 32,029 ALMs (76%), 40,601 registers |
+| `20d7e03` (VRAM bursts) | 5 | +0.096 | +0.137 | **met on every clock** (HDMI +0.241) -- the artifact; 32,091 ALMs (77%), 40,772 registers |
+| `81ebc34` (disc slots survive a reset) | 2, 3, 4, 5 | +0.445, -0.234, +0.271, +0.022 | -0.607, -0.719, -1.109, -0.366 | every SDRAM failure `sdram` state/mode/active -> 3 LUTs -> ~4.9 ns route -> `dq_out`'s I/O cell (seed 4 also HDMI -0.221) |
+| `16748b6` (`dq_out` through one mux) | 2-6 | -1.171 to +0.481 | -0.432 to -0.077 | now `state` -> 3 LUTs -> ~4 ns route -> `SDRAM_nWE`/`nCAS` |
+| `6052243` (command decoded a clock early) | 2 | +0.481 | +0.025 | setup met on every clock (HDMI +0.538); 32,334 ALMs (77%). **Hold -0.418** at the SDRAM clock, one path: `firebeat_sdram` `m_addr2[15]` (`clk_sys`) -> `sdram` `a[15]`, 0.53 ns of data against 0.77 ns of skew. `m_addr2` changes only with `m_req2` and while port 2 is idle, and `a` loads `addr2` only on `ack2 != req2`, so the edge that might catch the change does not load it. Deployed with `--force` as `Firebeat_30000008.rbf` |
+
+Logs `debug/build_d8f1_s{1,3,4,5}.log`, `debug/build_0bb8_s5.log`, `debug/build_81eb_s{2,3,4,5}.log`,
+`debug/build_1674_s{2..6}.log`, `debug/build_6052_s2.log`; `build/BUILT_COMMIT` names `6052243` at seed 2.
+
+Logs: `debug/build_disp_s2.log`, `debug/build_disp2_s2.log`; paths from
+`scripts/report_worst_paths.tcl` (`build/output_files/worst_paths_Firebeat.rpt`).
+
+## The seed 2 artifact on the board (Phase 5's first step)
+
+`deploy.py --rbf-only` put it at `/media/fat/_Arcade/cores/Firebeat_30000005.rbf` (the Phase 1
+artifact was `30000004`). It is the `Firebeat` revision at `5c83569` (HEAD `e0d79b7` at build
+time), fitter seed 2, every clock positive. `hw.py launch` on
+`/media/fat/_Arcade/_Firebeat/_dev/ParaParaParadise v1.1.mra` -- through `menu.rbf`, so the FPGA
+really reloads -- gets `{"core":"ppp11","gameName":"ParaParaParadise v1.1"}` back from the Remote
+API: the `.mra` is accepted and the framework runs. The flash was blank (no `.nv` file for it yet),
+so this is the state the Test-mode install starts from.
+
+The screen shows the core's built-in test picture, and it should: the GCU is Phase 3, so nothing
+the game draws reaches the video path yet (ROADMAP, Phase 2's exit note). Its native screenshot
+differs from `docs/screenshots/phase1_test_picture.png` in 7,416 of 196,608 pixels, all of them
+inside the top 17 rows (the OSD band); the frame below is identical, so the video path through the
+Phase 2 design is unchanged.
+
+Two things this run settled about the probe route:
+
+- The `Firebeat` revision carries no ISSP instance (`DEBUG_ISSP` is off): `scripts/read_issp.py`
+  reports "No In-System Sources and Probes instance was found". Hardware evidence needs
+  `Firebeat_stp`, a separate revision and therefore a separate timing gate.
+- `Firebeat_stp` does not close, at either seed tried: seed 2 gives `clk_sys` -0.572 ns with TNS
+  -33.2 and the SDRAM domain -0.874 ns; seed 3 gives -0.707 with TNS -15.9 and -0.585. Against
+  +0.036 / +0.607 for `Firebeat`, and with tens of nanoseconds of TNS at both seeds, this is not
+  placement: the probe bus itself costs the fit. The failing `clk_sys` paths are the same
+  icache-to-`o_v` family, i.e. the 32-bit fetch address `brd_pc` tapped for probe M is loaded onto
+  the address cone that has almost no margin to spare. The instrumented revision needs its probe
+  fields registered next to the ISSP instance (a snapshot), not a seed, before its numbers mean
+  anything; Phase 1's probe build closed because the design was smaller.
 
 ## Feasibility
 

@@ -72,12 +72,15 @@ module ppc403_core #(
     output logic        dbg_exec,
     output logic [31:0] dbg_pc,
     output logic [31:0] dbg_ir,
-    input  logic [5:0]  dbg_sel,     // 0-31 GPR, 32 CR, 33 LR, 34 CTR, 35 XER, 36 MSR
+    input  logic [5:0]  dbg_sel,     // 0-31 GPR, 32 CR, 33 LR, 34 CTR, 35 XER, 36 MSR; [Firebeat] the
+                                     // state load's 38-62, and 37 the executing instruction's PC
     output logic [31:0] dbg_val,
     // state load (benches, savestates): the dbg_sel numbering, then 37 PC (fetch address),
     // 38 SRR0, 39 SRR1, 40-43 SPRG0-3, 44 EXIER, 45 EVPR, 46 TBL, 47 TBH, 48 TCR, 49 TSR (ORed
     // in), 50 EXISR, 51 IOCR, 52 PIT (value and reload), 53 PIT count (ticks to the next event,
-    // 0 stopped), 54 external line state, [Firebeat] 55 ICCR, 56 DCCR, 57 DCWR. Written whatever ce; PC only while nothing is in flight.
+    // 0 stopped), 54 external line state, [Firebeat] 55 ICCR, 56 DCCR, 57 DCWR, 58 PIT reload
+    // (after 52), 59 SRR2, 60 SRR3, 61 ESR, 62 DEAR. Written whatever ce; PC only while nothing is in
+    // flight.
     input  logic        dbg_we,
     input  logic [5:0]  dbg_wsel,
     input  logic [31:0] dbg_wdata
@@ -97,10 +100,12 @@ logic        wr1_en, wr2_en;
 logic [4:0]  wr1_idx, wr2_idx;
 logic [31:0] wr1_val, wr2_val;
 logic [31:0] lvt, gz;
-logic [4:0]  gr_a [5];                  // read addresses: operands a, b, s; mreg; debug
-logic [31:0] gr_1 [5], gr_2 [5];
+// [Firebeat] 5-7: operands a, b, s of the head if nothing is popped (0-2: if the head is popped),
+// so that the late pop (a data cache ack) selects read values, not read addresses
+logic [4:0]  gr_a [8];                  // read addresses: operands a, b, s; mreg; debug; a, b, s
+logic [31:0] gr_1 [8], gr_2 [8];
 genvar gi;
-generate for (gi = 0; gi < 5; gi++) begin : g_gpr
+generate for (gi = 0; gi < 8; gi++) begin : g_gpr
     sharc2_lutram #(.AW(5), .DW(32)) u_b1 (.clk, .we(wr1_en), .wa(wr1_idx), .wd(wr1_val), .ra(gr_a[gi]), .rd(gr_1[gi]));
     sharc2_lutram #(.AW(5), .DW(32)) u_b2 (.clk, .we(wr2_en), .wa(wr2_idx), .wd(wr2_val), .ra(gr_a[gi]), .rd(gr_2[gi]));
 end endgenerate
@@ -647,6 +652,32 @@ always_comb begin
     6'd34:   dbg_val = ctr;
     6'd35:   dbg_val = xer;
     6'd36:   dbg_val = msr;
+    6'd37:   dbg_val = xin_pc;          // [Firebeat] the state dump's
+    6'd38:   dbg_val = srr0;
+    6'd39:   dbg_val = srr1;
+    6'd40:   dbg_val = sprg[0];
+    6'd41:   dbg_val = sprg[1];
+    6'd42:   dbg_val = sprg[2];
+    6'd43:   dbg_val = sprg[3];
+    6'd44:   dbg_val = exier;
+    6'd45:   dbg_val = evpr;
+    6'd46:   dbg_val = tb[31:0];
+    6'd47:   dbg_val = {8'd0, tb[55:32]};
+    6'd48:   dbg_val = tcr;
+    6'd49:   dbg_val = tsr;
+    6'd50:   dbg_val = exisr;
+    6'd51:   dbg_val = iocr;
+    6'd52:   dbg_val = pit_spr;
+    6'd53:   dbg_val = pit_count[31:0];
+    6'd54:   dbg_val = {27'd0, irqstate};
+    6'd55:   dbg_val = iccr;
+    6'd56:   dbg_val = dccr;
+    6'd57:   dbg_val = dcwr;
+    6'd58:   dbg_val = pit_reload;
+    6'd59:   dbg_val = srr2;
+    6'd60:   dbg_val = srr3;
+    6'd61:   dbg_val = esr;
+    6'd62:   dbg_val = dear;
     default: dbg_val = gpr_rd(4);
     endcase
 end
@@ -681,17 +712,21 @@ logic [4:0]  w1_idx, w2_idx;
 logic [31:0] w1_val, w2_val;
 logic [31:0] nh;             // the head instruction at the next clock
 // the queue's next head, without the redirect (it empties the queue: a wrong guess is unused)
+// [Firebeat] as two candidates, popped (nh1) or not (nh0), chosen by nh_sel
+logic [31:0] nh0, nh1;
+wire         nh_sel = ce && q_pop;
 always_comb begin
-    nh = q_ir[0];
-    if (ce) begin
-        if (q_pop) nh = q_ir[1];
-        if (f_ack_ok && (q_n == 2'd0 || (q_n == 2'd1 && q_pop))) nh = i_rdata;
-    end
+    nh0 = (ce && f_ack_ok && q_n == 2'd0) ? i_rdata : q_ir[0];
+    nh1 = (ce && f_ack_ok && q_n <= 2'd1) ? i_rdata : q_ir[1];
+    nh = nh_sel ? nh1 : nh0;
 end
-assign gr_a[0] = nh[20:16];
-assign gr_a[1] = nh[15:11];
-assign gr_a[2] = nh[25:21];
+assign gr_a[0] = nh1[20:16];
+assign gr_a[1] = nh1[15:11];
+assign gr_a[2] = nh1[25:21];
 assign gr_a[4] = dbg_sel[4:0];
+assign gr_a[5] = nh0[20:16];
+assign gr_a[6] = nh0[15:11];
+assign gr_a[7] = nh0[25:21];
 logic [31:0] o_v [3];        // its operands a, b, s (below)
 logic [2:0]  o_s1, o_s2;
 logic [31:0] w1_q, w2_q;
@@ -1160,6 +1195,11 @@ always_ff @(posedge clk) begin
         6'd55: iccr <= dbg_wdata;            // [Firebeat]
         6'd56: dccr <= dbg_wdata;
         6'd57: dcwr <= dbg_wdata;
+        6'd58: pit_reload <= dbg_wdata;
+        6'd59: srr2 <= dbg_wdata;
+        6'd60: srr3 <= dbg_wdata;
+        6'd61: esr <= dbg_wdata;
+        6'd62: dear <= dbg_wdata;
         default: ;                      // GPRs: below, through write port 1
         endcase
     end
@@ -1169,10 +1209,13 @@ always_ff @(posedge clk) begin
     // resolved next clock from the ports' values (w1_q, w2_q), so that the late write values do
     // not pass through the operand muxes
     begin
-        logic [4:0]  r [3];
+        logic [4:0]  r [3], r0 [3], r1 [3];
         r[0] = nh[20:16]; r[1] = nh[15:11]; r[2] = nh[25:21];
+        r0[0] = nh0[20:16]; r0[1] = nh0[15:11]; r0[2] = nh0[25:21];
+        r1[0] = nh1[20:16]; r1[1] = nh1[15:11]; r1[2] = nh1[25:21];
         for (int k = 0; k < 3; k++) begin
-            o_v[k] <= (dbg_we && dbg_wsel == {1'b0, r[k]}) ? dbg_wdata : gpr_rd(k);
+            o_v[k] <= nh_sel ? ((dbg_we && dbg_wsel == {1'b0, r1[k]}) ? dbg_wdata : gpr_rd(k))
+                             : ((dbg_we && dbg_wsel == {1'b0, r0[k]}) ? dbg_wdata : gpr_rd(k + 5));
             o_s1[k] <= w1_en && w1_idx == r[k] && !reset;
             o_s2[k] <= w2_en && w2_idx == r[k] && !reset;
             if (reset) o_v[k] <= 32'h0;

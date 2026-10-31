@@ -17,7 +17,7 @@
 //
 // Memories: SDRAM as firebeat_sys lays it out (work RAM from workram.bin, the three flash chips and
 // the RTC from the window's MAME NVRAM files, the BIOS), answered +lat clocks after a request; VRAM
-// in a C++ array, a clock after.
+// on hornet_ddr3 and sim/common/ddr3_model.h (+ddrlat, +ddrbusy).
 //
 // As sim/cpu_tb: the window starts from MAME's registers with the caches empty (ICCR = DCCR =
 // 0x0000FFFF, DCWR = 0); the timebase is stopped and each read of it loaded with MAME's value; the
@@ -27,6 +27,7 @@
 
 #include "Vtb_board.h"
 #include "verilated.h"
+#include "../common/ddr3_model.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -103,7 +104,13 @@ int main(int argc, char **argv) {
         memcpy(sd.data() + 0x2800000, bios.data(), bios.size());
     }
     auto rtcnv = load(dir + "nvram/ppp11/rtc", 4152);
-    std::vector<uint32_t> vram(0x800000, 0);
+    // VRAM: the GCU's hornet_ddr3 on the DE10-nano's DDR3 (+ddrlat, +ddrbusy)
+    Ddr3Model ddr;
+    {
+        const char *a;
+        if ((a = Verilated::commandArgsPlusMatch("ddrlat=")) && *a) ddr.lat = atoi(a + 8);
+        if ((a = Verilated::commandArgsPlusMatch("ddrbusy=")) && *a) ddr.busy = atoi(a + 9);
+    }
 
     std::map<std::string, uint32_t> st;
     std::vector<Access> log;
@@ -133,7 +140,8 @@ int main(int argc, char **argv) {
     t->dma_hold = (s = Verilated::commandArgsPlusMatch("hold=")) && *s ? atoi(s + 6) : 1;
     t->in0 = 0x7f; t->in1 = 0xff; t->in2 = 0xff; t->in3 = 0xff; t->sensors = 0; t->cabinet_info = 8;
     t->vblank = 0; t->img_mounted = 0; t->sd_ack = 0; t->sd_buff_wr = 0;
-    auto tick = [&]() { t->clk = 0; t->eval(); t->clk = 1; t->eval(); };
+    // the DDR3 model steps with every clock, or a beat's DOUT_READY is seen twice
+    auto tick = [&]() { t->clk = 0; t->eval(); ddr.sample(t); t->clk = 1; t->eval(); ddr.drive(t); };
     for (int i = 0; i < 4; i++) tick();
     t->reset = 0;
     // the RTC's .nv image through its NVRAM port
@@ -158,7 +166,7 @@ int main(int argc, char **argv) {
     t->ce = 1;
 
     struct Req { bool on = false; int wait = 0; };
-    Req cr_, mr, wr, vr;
+    Req cr_, mr, wr;
     size_t next = 0;
     bool fail = false;
     uint32_t tsr_now = 0;
@@ -182,11 +190,12 @@ int main(int argc, char **argv) {
     bool cur_idle = false;
     uint64_t idle_cyc = 0, work_cyc = 0, dma_cyc = 0;
     long vblanks = 0;
+    uint64_t last_insn = 0;
     while (insns < n && !Verilated::gotFinish() && !fail) {
         if (tsr_now) { poke(49, tsr_now); tsr_now = 0; }
         if (tb_sel >= 0) { poke(tb_sel, tb_val); tb_sel = -1; }
         t->clk = 0;
-        t->c_ack = 0; t->m_ack = 0; t->w_ack = 0; t->v_ack = 0;
+        t->c_ack = 0; t->m_ack = 0; t->w_ack = 0;
         if (cr_.on && cr_.wait == 0) {
             uint32_t a = (uint32_t)t->c_addr << 4;
             if (t->c_we) for (int k = 0; k < 4; k++) for (int b = 0; b < 4; b++) sd[a + 4 * k + b] = t->c_wdata[k] >> (24 - 8 * b);
@@ -203,10 +212,6 @@ int main(int argc, char **argv) {
             if (t->w_we) { for (int b = 0; b < 4; b++) if (t->w_be & (8 >> b)) sd[a + b] = t->w_wdata >> (24 - 8 * b); }
             else t->w_rdata = be32(&sd[a]);
             t->w_ack = 1; wr.on = false;
-        }
-        if (vr.on && vr.wait == 0) {
-            if (t->v_we) vram[t->v_addr] = t->v_wdata; else t->v_rdata = vram[t->v_addr];
-            t->v_ack = 1; vr.on = false;
         }
         t->ce = 1;
         t->eval();
@@ -260,11 +265,19 @@ int main(int argc, char **argv) {
         if (t->c_req && !cr_.on && !t->c_ack) { cr_.on = true; cr_.wait = lat - 1; }
         if (t->m_req && !mr.on && !t->m_ack) { mr.on = true; mr.wait = lat - 1; }
         if (t->w_req && !wr.on && !t->w_ack) { wr.on = true; wr.wait = lat - 1; }
-        if (t->v_req && !vr.on && !t->v_ack) { vr.on = true; vr.wait = 0; }
+        ddr.sample(t);
         t->clk = 1; t->eval();
-        for (Req *r : {&cr_, &mr, &wr, &vr}) if (r->on && r->wait > 0) r->wait--;
+        ddr.drive(t);
+        for (Req *r : {&cr_, &mr, &wr}) if (r->on && r->wait > 0) r->wait--;
         cyc++;
         if (t->dma_busy) dma_cyc++;
+        // no instruction for 1M clocks: the board is stuck
+        if (t->dbg_exec && t->ce) last_insn = cyc;
+        else if (cyc - last_insn == 1000000) {
+            fprintf(stderr, "stuck: no instruction for 1,000,000 clocks after instruction %ld, PC %08X, DMA busy %d\n",
+                    insns, t->dbg_pc, t->dma_busy);
+            fail = true;
+        }
         (cur_idle ? idle_cyc : work_cyc)++;
     }
     fclose(tr);
@@ -275,6 +288,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%ld instructions, %llu clocks (%.2f clocks/insn); %llu device accesses compared of %zu; %llu GCU commands\n",
             insns, (unsigned long long)cyc, insns ? (double)cyc / insns : 0.0, (unsigned long long)dev_cmp, log.size(),
             (unsigned long long)cmds);
+    t->final();
     delete t;
     return fail ? 2 : 0;
 }

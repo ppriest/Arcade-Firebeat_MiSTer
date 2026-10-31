@@ -37,8 +37,16 @@
 module fb_board (
     input  logic         clk,
     input  logic         reset,
-    input  logic         por,            // power-on: the RTC, which a board reset leaves alone (MAME's has no reset)
+    input  logic         por,            // power-on: the RTC (MAME's has no reset) and the mounted discs, which a board reset leaves alone
     input  logic         ce,             // the CPU's clock enable (pause)
+    input  logic         halt,           // the state dump: stop the CPU at an instruction boundary
+    output logic         frozen,         // halted, data cache written back, DMA and GCU idle
+    input  logic [13:0]  st_a,           // the state dump's register block (docs/STATE.md), word address
+    output logic [31:0]  st_d,           // a clock after st_a; read while frozen
+    input  logic         st_we,          // write st_wd there: sim/boot_tb's state load (Verilator only)
+    input  logic [31:0]  st_wd,
+    output logic [1:0]   ata_check,      // a drive's CHECK CONDITION, sense key ata_key (fb_atapi)
+    output logic [3:0]   ata_key [2],
     // hold the CPU while the DMA runs, as MAME runs a transfer inside the DMACR write (benches, for
     // MAME's order of accesses; the GCU's status then reads MAME's constant). Low: the DMA runs
     // beside the CPU, as the 403's does, and the GCU's status shows the port it feeds busy.
@@ -66,13 +74,19 @@ module fb_board (
     input  logic         w_ack,
     input  logic [31:0]  w_rdata,
 
-    // VRAM (DDR3), words
-    output logic         v_req,
-    output logic         v_we,
-    output logic [22:0]  v_addr,
-    output logic [31:0]  v_wdata,
-    input  logic         v_ack,
-    input  logic [31:0]  v_rdata,
+    // VRAM (DDR3): the GCU's wide hornet_ddr3 master
+    output logic         vm_read,
+    output logic         vm_write,
+    output logic [31:0]  vm_addr,
+    output logic [10:0]  vm_burst,
+    output logic [3:0]   vm_be,
+    output logic [31:0]  vm_wdata,
+    output logic [3:0]   vm_be_hi,
+    output logic [31:0]  vm_wdata_hi,
+    input  logic         vm_waitn,
+    input  logic         vm_rvalid,
+    input  logic [31:0]  vm_rdata,
+    input  logic [31:0]  vm_rdata_hi,
 
     // the discs: hps_io image slots 0 (program CD) and 1 (audio CD)
     input  logic [1:0]   img_mounted,
@@ -104,6 +118,12 @@ module fb_board (
     output logic         gcu_cmd_v,
     output logic         gcu_cmd_port,
     output logic [127:0] gcu_cmd,
+    // the GCU's display registers, for fb_gcu_disp
+    output logic [2:0][31:0] gd_crtc,
+    output logic [15:0]  gd_layer,
+    output logic [3:0][15:0] gd_alpha, gd_x, gd_y, gd_w, gd_h,
+    output logic [3:0][31:0] gd_base,
+    output logic [15:0]  gd_6c,
 
     output logic         mon_v,
     output logic         mon_we,
@@ -132,16 +152,17 @@ always_ff @(posedge clk) begin
 end
 
 // ---------------------------------------------------------------- the CPU
-// held while the DMA runs: MAME runs a transfer inside the DMACR write (ppccom.cpp:2497-2505), so
-// the CPU sees it finished and the devices see MAME's order of accesses
-wire ce_cpu = ce && !(dma_hold && dma_busy);
+// MAME runs a transfer inside the DMACR write (ppccom.cpp:2497-2505). Here it runs beside the CPU
+// (dma_hold low), which waits for its end at a DMA register access: the BIOS rewrites a channel's
+// registers as soon as the GCU's status shows the other port free, and a running transfer must not
+// take them. dma_hold: the CPU held for the whole transfer, MAME's order of every access
 logic dbg_exec_c;
 logic        i_req, i_ack, i_a31, d_req, d_we, d_ack, d_a31;
 logic [30:0] i_addr, d_addr;
 logic [31:0] i_rdata, d_rdata, d_wdata, iccr, dccr, dcwr;
 logic [3:0]  d_be;
 logic [2:0]  d_cop;
-logic        dcr_we_c, dma_hit;
+logic        dcr_we_c, dcr_re_c, dma_hit;
 logic [9:0]  dcr_addr;
 logic [31:0] dcr_wdata, dcr_rdata, dma_rdata;
 logic [4:0]  ext_irq;
@@ -150,14 +171,50 @@ logic [3:0]  dma_irq;
 logic        spu_irq_rx, spu_irq_tx, gcu_irq;
 logic        dma_bad, spu_bad, flash_bad;
 
+wire dma_wait = dma_busy && (dma_hold || ((dcr_we_c || dcr_re_c) && dma_hit));
+// halt runs a paused CPU on to the next instruction start and holds it there; the timebase stops
+logic halted;
+always_ff @(posedge clk) begin
+    if (halt && dbg_exec_c && !dma_wait) halted <= 1'b1;
+    if (!halt || reset) halted <= 1'b0;
+end
+wire ce_cpu = (ce || halt) && !dma_wait && !(halt && (dbg_exec_c || halted));
+logic dc_flushed, gcu_idle;
+assign frozen = halted && dc_flushed && !dma_busy && gcu_idle;
+
+// the register block (docs/STATE.md): 0x0000 the CPU (ppc403_core's state codes), 0x0100 the ATAPI
+// drives, 0x0200 the SPU, 0x0280 the RTC's counters, 0x0300 the flash, 0x0340 the PC16552D,
+// 0x0380 the GCU shell, 0x0400 the DMA, 0x0500 the DCR store, 0x0600 the YMZ280B's registers (read
+// only), 0x2000 the RTC's NVRAM image a byte a word (its .nv format, 4,152 bytes)
+logic [31:0] st_ata, st_spu, st_rtc, st_fl, st_uart, st_gcu, st_dma;
+logic [7:0]  st_ymz;
+wire  st_hold = halted || st_we;        // the RAMs' read ports follow st_a
+wire  st_rtcnv = st_a[13];
+always_ff @(posedge clk)
+    casez (st_a)
+    14'b00_0000_00??_????: st_d <= dbg_val;
+    14'b00_0001_????_????: st_d <= st_ata;
+    14'b00_0010_0???_????: st_d <= st_spu;
+    14'b00_0010_10??_????: st_d <= st_rtc;
+    14'b00_0011_00??_????: st_d <= st_fl;
+    14'b00_0011_010?_????: st_d <= st_uart;
+    14'b00_0011_10??_????: st_d <= st_gcu;
+    14'b00_0100_????_????: st_d <= st_dma;
+    14'b00_0101_????_????: st_d <= dcr_q;
+    14'b00_0110_????_????: st_d <= {24'd0, st_ymz};
+    14'b1?_????_????_????: st_d <= {24'd0, rtc_nv_rdata};
+    default:               st_d <= 32'd0;
+    endcase
+wire st_w_dcr = st_we && st_a[13:8] == 6'h05;
+
 ppc403_core #(.PVR(32'h0020_1400)) u_cpu (
-    .clk, .reset, .ce(ce_cpu), .tb_tick(tick66 && ce && tb_en),
+    .clk, .reset, .ce(ce_cpu), .tb_tick(tick66 && ce && tb_en && !halt),
     .i_req, .i_addr, .i_a31, .i_ack, .i_rdata,
     .d_req, .d_we, .d_addr, .d_a31, .d_cop, .d_be, .d_wdata, .d_ack, .d_rdata,
     .iccr_o(iccr), .dccr_o(dccr), .dcwr_o(dcwr),
-    .dcr_we(dcr_we_c), .dcr_re(), .dcr_addr, .dcr_wdata, .dcr_rdata,
+    .dcr_we(dcr_we_c), .dcr_re(dcr_re_c), .dcr_addr, .dcr_wdata, .dcr_rdata,
     .ext_irq, .int_irq,
-    .dbg_exec(dbg_exec_c), .dbg_pc, .dbg_ir, .dbg_sel, .dbg_val, .dbg_we, .dbg_wsel, .dbg_wdata
+    .dbg_exec(dbg_exec_c), .dbg_pc, .dbg_ir, .dbg_sel(halted ? st_a[5:0] : dbg_sel), .dbg_val, .dbg_we, .dbg_wsel, .dbg_wdata
 );
 // an instruction starts only in a clock the CPU is enabled (the core's dbg_exec is not gated)
 assign dbg_exec = dbg_exec_c && ce_cpu;
@@ -167,9 +224,12 @@ assign ext_irq = {ata_irq, 3'b000, gcu_irq} | irq_force;
 assign int_irq = {dma_irq[0], dma_irq[1], dma_irq[2], dma_irq[3], 2'b00, spu_irq_rx, spu_irq_tx, 1'b0};
 // the DCRs neither the core nor the DMA holds (bank registers and the rest): kept and read back, as
 // MAME's m_dcr array (ppccom.cpp:2512-2518)
-logic [31:0] dcr_mem [256];
-always_ff @(posedge clk) if (ce_cpu && dcr_we_c && !dma_hit) dcr_mem[dcr_addr[7:0]] <= dcr_wdata;
-assign dcr_rdata = dma_hit ? dma_rdata : dcr_mem[dcr_addr[7:0]];
+logic [31:0] dcr_q;
+sharc2_lutram #(.AW(8), .DW(32)) u_dcr (
+    .clk, .we((ce_cpu && dcr_we_c && !dma_hit) || st_w_dcr), .wa(st_w_dcr ? st_a[7:0] : dcr_addr[7:0]),
+    .wd(st_w_dcr ? st_wd : dcr_wdata), .ra(st_hold ? st_a[7:0] : dcr_addr[7:0]), .rd(dcr_q)
+);
+assign dcr_rdata = dma_hit ? dma_rdata : dcr_q;
 
 logic         u_req, u_we, u_ack;
 logic [30:0]  u_addr;
@@ -177,7 +237,7 @@ logic [3:0]   u_be;
 logic [31:0]  u_wdata, u_rdata;
 
 fb_ppc_mem u_mem (
-    .clk, .reset, .ce(ce_cpu),
+    .clk, .reset, .ce(ce_cpu), .flush(halted), .flushed(dc_flushed),
     .i_req, .i_addr, .i_a31, .i_ack, .i_rdata,
     .d_req, .d_we, .d_addr, .d_a31, .d_be, .d_wdata, .d_cop, .d_ack, .d_rdata,
     .iccr, .dccr, .dcwr,
@@ -197,7 +257,8 @@ fb_ppc_dma u_dma (
     .busy(dma_busy), .dport(dma_port), .irq(dma_irq), .bad(dma_bad),
     .m_req, .m_addr, .m_ack, .m_rdata,
     .g_we, .g_port, .g_data, .g_ready(g_ready && bs == B_IDLE),
-    .b_req, .b_we, .b_addr, .b_be, .b_wdata, .b_ack, .b_rdata
+    .b_req, .b_we, .b_addr, .b_be, .b_wdata, .b_ack, .b_rdata,
+    .st_a(st_a[7:0]), .st_d(st_dma), .st_we(st_we && st_a[13:8] == 6'h04), .st_wd
 );
 
 // ---------------------------------------------------------------- the bus
@@ -405,21 +466,24 @@ assign fw_ack = w_ack && w_f;
 
 // ---------------------------------------------------------------- devices
 fb_pc16552 u_uart (
-    .clk, .reset, .req(uart_req), .we(r_we), .addr(l_addr[3:0]), .wdata(l_wd), .rdata(uart_q)
+    .clk, .reset, .req(uart_req), .we(r_we), .addr(l_addr[3:0]), .wdata(l_wd), .rdata(uart_q),
+    .st_a(st_a[4:0]), .st_d(st_uart), .st_we(st_we && st_a[13:5] == 9'h01A), .st_wd
 );
 
 fb_spu u_spu (
     .clk, .reset, .tick66, .iocr_b1(1'b0),
     .req(spu_req), .we(r_we), .addr(l_addr[3:0]), .wdata(l_wd), .rdata(spu_q),
     .irq_rx(spu_irq_rx), .irq_tx(spu_irq_tx), .bad(spu_bad),
-    .ld_we(dg_we), .ld_addr(dg_addr), .ld_data(dg_data)
+    .ld_we(dg_we), .ld_addr(dg_addr), .ld_data(dg_data),
+    .st_a(st_a[6:0]), .st_d(st_spu), .st_we(st_we && st_a[13:7] == 7'h04), .st_wd
 );
 
 fb_rtc65271 u_rtc (
     .clk, .reset(por),
     .req(rtc_req), .we(r_we), .xram(r_dev == D_XRAM), .addr(l_addr[5:0]), .wdata(l_wd), .rdata(rtc_q),
-    .nv_we(rtc_nv_we), .nv_addr(rtc_nv_addr), .nv_wdata(rtc_nv_wdata), .nv_rdata(rtc_nv_rdata),
-    .tm_set(rtc_set), .tm_bcd(rtc_time)
+    .nv_we(rtc_nv_we), .nv_addr(st_hold && st_rtcnv ? st_a[12:0] : rtc_nv_addr), .nv_wdata(rtc_nv_wdata),
+    .nv_rdata(rtc_nv_rdata), .tm_set(rtc_set), .tm_bcd(rtc_time),
+    .st_a(st_a[5:0]), .st_d(st_rtc), .st_we(st_we && st_a[13:6] == 8'h0A), .st_wd
 );
 
 logic        y_req, y_ack;
@@ -432,14 +496,15 @@ fb_flash u_flash (
     .c_addr(l_addr[20:0]), .c_wdata(l_wd), .c_ack(fl_ack), .c_rdata(fl_q),
     .y_req, .y_addr, .y_ack, .y_rdata,
     .w_req(fw_req), .w_we(fw_we), .w_addr(fw_addr), .w_be(fw_be), .w_wdata(fw_wdata), .w_ack(fw_ack),
-    .w_rdata, .bad(flash_bad)
+    .w_rdata, .bad(flash_bad),
+    .st_a(st_a[5:0]), .st_d(st_fl), .st_we(st_we && st_a[13:6] == 8'h0C), .st_wd
 );
 
 fb_ymz_shell u_ymz (
     .clk, .reset,
     .req(ymz_req), .we(r_we), .a0(l_addr[0]), .wdata(l_wd), .ack(ymz_ack), .rdata(ymz_q),
     .y_req, .y_addr, .y_ack, .y_rdata,
-    .reg_q(), .reg_a(8'h00)
+    .reg_q(st_ymz), .reg_a(st_a[7:0])
 );
 
 fb_gcu_shell u_gcu (
@@ -449,18 +514,23 @@ fb_gcu_shell u_gcu (
     .dg_we(g_we), .dg_port(g_port), .dg_data(g_data), .dg_ready(g_ready),
     .vblank, .busy0(!dma_hold && dma_busy && !dma_port), .busy1(!dma_hold && dma_busy && dma_port), .irq(gcu_irq),
     .cmd_v(gcu_cmd_v), .cmd_port(gcu_cmd_port), .cmd(gcu_cmd),
-    .v_req, .v_we, .v_addr, .v_wdata, .v_ack, .v_rdata,
-    .crtc(), .ctrl_lo()
+    .m_read(vm_read), .m_write(vm_write), .m_addr(vm_addr), .m_burst(vm_burst), .m_be(vm_be),
+    .m_wdata(vm_wdata), .m_be_hi(vm_be_hi), .m_wdata_hi(vm_wdata_hi), .m_waitn(vm_waitn),
+    .m_rvalid(vm_rvalid), .m_rdata(vm_rdata), .m_rdata_hi(vm_rdata_hi), .gcu_idle,
+    .crtc(gd_crtc), .ctrl_lo(gd_layer), .fr_alpha(gd_alpha), .fr_x(gd_x), .fr_y(gd_y), .fr_w(gd_w),
+    .fr_h(gd_h), .fr_base(gd_base), .reg_6c(gd_6c),
+    .st_a(st_a[5:0]), .st_d(st_gcu), .st_we(st_we && st_a[13:6] == 8'h0E), .st_wd
 );
 
 // the ATA interface: MAME's internal value is the bus halfword byte-swapped
 wire [15:0] ata_wd = (r_lane == 2'd0) ? {r_wdata[23:16], r_wdata[31:24]} : {r_wdata[7:0], r_wdata[15:8]};
 fb_ata u_ata (
-    .clk, .reset,
+    .clk, .reset, .por,
     .req(ata_req), .we(r_we), .cs1(r_dev == D_ATA1), .off({r_addr[3:2], r_lane[1]}), .wdata(ata_wd),
     .ack(ata_ack), .rdata(ata_q), .irq(ata_irq),
     .img_mounted, .img_size, .sd_lba, .sd_blk_cnt, .sd_rd, .sd_ack, .sd_buff_wr, .sd_buff_dout,
-    .play_on(), .play_lba(), .bad(ata_bad)
+    .play_on(), .play_lba(), .check(ata_check), .check_key(ata_key),
+    .st_a(st_a[7:0]), .st_d(st_ata), .st_we(st_we && st_a[13:8] == 6'd1), .st_wd, .bad(ata_bad)
 );
 
 assign bad = dma_bad || spu_bad || flash_bad || ata_bad;

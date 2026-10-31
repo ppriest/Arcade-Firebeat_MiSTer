@@ -15,10 +15,15 @@
 // the 4 or 5 blocks that hold them, the words in that window written to the drive's buffer.
 // hps_io's handshake: sd_rd held until sd_ack rises, words with sd_buff_wr while sd_ack is high,
 // the request over when sd_ack falls.
+//
+// The disc outlives a board reset (the OSD's "Reset" after mounting): `reset` is power-on only. A
+// board reset drops the pending request and the rest of one in flight, whose words and done would
+// otherwise reach the reset drive's next fetch.
 
 module fb_cd_slot (
     input  logic        clk,
-    input  logic        reset,
+    input  logic        reset,          // power-on
+    input  logic        brd_reset,
 
     input  logic        mounted,        // img_mounted for this slot
     input  logic [63:0] img_size,
@@ -61,6 +66,7 @@ logic [8:0]  o0;                        // the window's offset in the first bloc
 logic        magic_ok;
 logic [31:0] pend_lba;
 logic        pend;
+logic        drop;                      // the transfer in flight began before a board reset
 
 always_ff @(posedge clk) begin
     disc_new <= 1'b0;
@@ -116,9 +122,9 @@ always_ff @(posedge clk) begin
             logic [11:0] p;
             w <= w + 11'd1;
             p = {w, 1'b0} - {3'b000, o0};
-            if ({w, 1'b0} >= {3'b000, o0} && p < 12'd2048) begin bw_we <= 1'b1; bw_a <= p[10:1]; bw_d <= sd_buff_dout; end
+            if ({w, 1'b0} >= {3'b000, o0} && p < 12'd2048 && !drop) begin bw_we <= 1'b1; bw_a <= p[10:1]; bw_d <= sd_buff_dout; end
         end
-        if (!sd_ack && !sd_rd) begin rq_done <= 1'b1; s <= S_IDLE; end
+        if (!sd_ack && !sd_rd) begin rq_done <= !drop; drop <= 1'b0; s <= S_IDLE; end
     end
     default: s <= S_IDLE;
     endcase
@@ -131,7 +137,8 @@ always_ff @(posedge clk) begin
             s <= S_TOC;
         end else s <= S_IDLE;
     end
-    if (reset) begin s <= S_IDLE; sd_rd <= 1'b0; have_disc <= 1'b0; pend <= 1'b0; ntrk <= 7'd0; end
+    if (brd_reset) begin pend <= 1'b0; if (s == S_ASK || s == S_XFER) drop <= 1'b1; end
+    if (reset) begin s <= S_IDLE; sd_rd <= 1'b0; have_disc <= 1'b0; pend <= 1'b0; drop <= 1'b0; ntrk <= 7'd0; end
 end
 
 endmodule

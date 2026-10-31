@@ -23,7 +23,10 @@
 //      is uploaded with the board running (its CPU paused) and the flash part compared.
 //
 //     scripts/run_verilator.sh sys_tb [+seed=N] [+lat=N] [+busy=P] [+flash=BYTES]
-//         [+boot=DIR +bios=FILE [+frames=N]]
+//         [+boot=DIR +bios=FILE [+frames=N] [+shot=FILE]]
+//
+// +shot: after step 6's frames, the next frame's visible pixels as a binary PPM.
+// +io=FILE: step 6's device accesses (fb_board's bus monitor), one "R|W addr mask data" a line.
 //
 // +flash: how much of the flash images to send and check (default all 6 MB); the RTC's part of
 // the file is always sent at its offset, 0x600000.
@@ -47,7 +50,13 @@ static Vtb_sys *t;
 static uint64_t clocks = 0;
 static int errors = 0;
 
+static FILE *iolog;                     // +io: step 6's device accesses, as MAME's io.txt
+
 static void tick() {
+    if (iolog && t->mon_v)
+        fprintf(iolog, "%c %08X %08X %08X\n", t->mon_we ? 'W' : 'R', (unsigned)t->mon_addr, t->mon_mask, t->mon_data);
+    if (iolog && t->dcr_v)              // "D dcr data busy": a DMA register write, the engine busy or not
+        fprintf(iolog, "D %03X %08X %d\n", t->dcr_a, t->dcr_d, t->dma_e_busy);
     t->clk = 1; t->clk_mem = 1; t->eval();
     t->clk_mem = 0; t->eval();
     t->clk = 0; t->clk_mem = 1; t->eval();
@@ -179,12 +188,39 @@ static void check_frame(bool inv) {
     if (t->scan_late) fail("scan-out late");
 }
 
+// a whole frame from vsync's rise, its visible pixels written as a PPM
+static void shot(const std::string &f) {
+    int vs = t->vid_vs;
+    while (!(t->vid_vs && !vs)) { vs = t->vid_vs; tick(); }
+    std::vector<std::vector<uint8_t>> rows;
+    int prev_de = 0;
+    vs = 1;
+    while (true) {
+        tick();
+        if (t->vid_vs && !vs) break;
+        vs = t->vid_vs;
+        if (!t->ce_pix) continue;
+        int de = !(t->vid_hb || t->vid_vb);
+        if (de && !prev_de) rows.emplace_back();
+        if (de) { rows.back().push_back(t->vid_r); rows.back().push_back(t->vid_g); rows.back().push_back(t->vid_b); }
+        prev_de = de;
+    }
+    size_t w = rows.empty() ? 0 : rows[0].size() / 3;
+    FILE *fp = fopen(f.c_str(), "wb");
+    if (!fp) { fail("cannot write %s", f.c_str()); return; }
+    fprintf(fp, "P6\n%zu %zu\n255\n", w, rows.size());
+    for (auto &row : rows) { row.resize(w * 3, 0); fwrite(row.data(), 1, row.size(), fp); }
+    fclose(fp);
+    printf("  shot: %zu x %zu -> %s\n", w, rows.size(), f.c_str());
+}
+
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
     t = new Vtb_sys;
+    t->test_pic = 1;                    // steps 4-5 show the test picture
     int seed = 1, lat = 20, busy = 10;
     size_t flash = 0x600000;
-    std::string boot, bios;
+    std::string boot, bios, shot_file, io_file;
     int frames = 100;
     for (int i = 1; i < argc; i++) {
         sscanf(argv[i], "+seed=%d", &seed);
@@ -193,6 +229,8 @@ int main(int argc, char **argv) {
         if (!strncmp(argv[i], "+flash=", 7)) flash = strtoul(argv[i] + 7, nullptr, 0) & ~15ul;
         if (!strncmp(argv[i], "+boot=", 6)) boot = argv[i] + 6;
         if (!strncmp(argv[i], "+bios=", 6)) bios = argv[i] + 6;
+        if (!strncmp(argv[i], "+shot=", 6)) shot_file = argv[i] + 6;
+        if (!strncmp(argv[i], "+io=", 4)) io_file = argv[i] + 4;
         sscanf(argv[i], "+frames=%d", &frames);
     }
     std::mt19937 rng(seed);
@@ -256,7 +294,8 @@ int main(int argc, char **argv) {
     check_frame(false);
     check_frame(false);
 
-    // 6. the board on the real BIOS and NVRAM
+    // 6. the board on the real BIOS and NVRAM, through the GCU's display
+    t->test_pic = 0;
     if (!boot.empty() && !bios.empty()) {
         printf("board:\n");
         std::vector<uint8_t> im = load(bios), dg = load(boot + "/dongle.bin"), nv2;
@@ -272,15 +311,19 @@ int main(int argc, char **argv) {
         nv2.insert(nv2.end(), rtc.begin(), rtc.end());
         download(0, im);
         download(4, nv2);
+        if (!io_file.empty()) iolog = fopen(io_file.c_str(), "w");
         t->hold = 0;
         for (int i = 0; i < 100; i++) tick();
         if (t->brd_reset) fail("the board is still in reset");
         for (int f = 1; f <= frames && !t->brd_bad; f++) {
             frame();
+            if (iolog) fprintf(iolog, "F %d %08X\n", f, t->brd_pc);
             if (f % 10 == 0) printf("  frame %d: PC %08X\n", f, t->brd_pc);
             fflush(stdout);
         }
         if (t->brd_bad) fail("a model met a mode it does not run, PC %08X", t->brd_pc);
+        if (iolog) { fclose(iolog); iolog = nullptr; }
+        if (!shot_file.empty()) shot(shot_file);
         std::vector<uint8_t> up2 = upload(4, nv2.size());
         int fb = 0, rb = 0;
         for (size_t a = 0; a < 0x600000; a++) fb += up2[a] != nv2[a];

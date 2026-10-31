@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Phase 2's YMZ280B (0x7D000400-0x7D000401): MAME's register interface (devices/sound/ymz280b.cpp
-// read, write, write_to_register) without the voices (Phase 5). Offset 0 written selects a
-// register, offset 1 written writes it; registers are kept for Phase 5. Offset 1 read is the
+// read, write, write_to_register) without the voices (Phase 4). Offset 0 written selects a
+// register, offset 1 written writes it; registers are kept for Phase 4. Offset 1 read is the
 // status register, which only the voices set, so it reads 0 here; offset 0 read is the external
 // memory readback: with FF bit 6 (ext_mem_enable) it returns the latch, which is then refilled from
 // the next address (the address advancing); 0xFF otherwise. Register 0x86 completes the readback
@@ -28,7 +28,7 @@ module fb_ymz_shell (
     input  logic        y_ack,
     input  logic [7:0]  y_rdata,
 
-    output logic [7:0]  reg_q,          // register reg_a's value (Phase 5)
+    output logic [7:0]  reg_q,          // register reg_a's value (Phase 4)
     input  logic [7:0]  reg_a
 );
 

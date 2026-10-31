@@ -387,39 +387,43 @@ localparam CMD_LOAD_MODE       = 3'b000;
 // SDRAM state machines
 reg         dq_oe;
 reg  [15:0] dq_out;
+reg         dq_sel2;   // [Firebeat] in STATE_CONTW
+reg   [2:0] cmd_nx = 3'b111;   // [Firebeat] the next clock's {nRAS,nCAS,nWE}
 assign SDRAM_DQ = dq_oe ? dq_out : 16'bz;
 
 always @(posedge clk) begin
 	if(state == STATE_START) SDRAM_BA <= (mode == MODE_NORMAL) ? ba : 2'b00;
 	if(state == STATE_START) SDRAM_nCS <= (mode == MODE_NORMAL) ? chip : ichip;
 
-	dq_oe <= 1'b0;
-	casex({active,we,mode,state})
-		{2'bXX, MODE_NORMAL, STATE_START}: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= active ? CMD_ACTIVE : CMD_AUTO_REFRESH;
-		{2'b11, MODE_NORMAL, STATE_CONT }: begin
-			{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_WRITE;
-			dq_oe  <= 1'b1;
-			dq_out <= data;
+	// [Firebeat] dq_out loads every clock from registers through one mux: the I/O cell is far from
+	// the state decode, and data/data2 hold from STATE_START. dq_oe still decides what is driven.
+	dq_sel2 <= (state == STATE_CONT);
+	dq_out  <= dq_sel2 ? data2 : data;
+	dq_oe   <= mode == MODE_NORMAL && active && we && (state == STATE_CONT || (state == STATE_CONTW && w2));
+
+	// [Firebeat] The command is decoded a clock early into cmd_nx, so the I/O registers load a
+	// register. active, we, dbl, quad and w2 hold from STATE_START to the end of the access, and
+	// mode changes only at STATE_LAST, so the decode one state ahead sees what it would at the state.
+	// Commands: STATE_START ACTIVE (access) or AUTO_REFRESH, init LOAD_MODE / PRECHARGE; STATE_CONT
+	// WRITE or READ; [Hornet] STATE_CONTW a two-halfword write's second WRITE; [GX] STATE_CONT2 a
+	// double read's second READ; [Firebeat] STATE_CONT3/4 a quad read's third and fourth.
+	{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= cmd_nx;
+	cmd_nx <= CMD_NOP;
+	if(state == STATE_IDLE) begin
+		if(mode == MODE_LDM)      cmd_nx <= CMD_LOAD_MODE;
+		else if(mode == MODE_PRE) cmd_nx <= CMD_PRECHARGE;
+		else if(mode == MODE_NORMAL) begin
+			// the request branches below; with none, a nonzero reset counter still steps to START
+			if(rfs)                                                 cmd_nx <= CMD_AUTO_REFRESH;
+			else if(ack0 != req0 || ack1 != req1 || ack2 != req2)   cmd_nx <= CMD_ACTIVE;
+			else if(reset != 0)                                     cmd_nx <= CMD_AUTO_REFRESH;
 		end
-		{2'b10, MODE_NORMAL, STATE_CONT }: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_READ;
-
-		// init
-		{2'bXX,    MODE_LDM, STATE_START}: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_LOAD_MODE;
-		{2'bXX,    MODE_PRE, STATE_START}: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_PRECHARGE;
-
-		                          default: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_NOP;
-	endcase
-	// [GX] a double read's second READ, the row still open
-	if(mode == MODE_NORMAL && state == STATE_CONT2 && active && !we && dbl)
-		{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_READ;
-	// [Firebeat] a quad read's third and fourth READs
-	if(mode == MODE_NORMAL && (state == STATE_CONT3 || state == STATE_CONT4) && active && !we && quad)
-		{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_READ;
-	// [Hornet] a two-halfword write's second WRITE, the row still open, which precharges
-	if(mode == MODE_NORMAL && state == STATE_CONTW && active && we && w2) begin
-		{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_WRITE;
-		dq_oe  <= 1'b1;
-		dq_out <= data2;
+	end
+	if(mode == MODE_NORMAL && active) begin
+		if(state == STATE_CONT - 5'd1)                          cmd_nx <= we ? CMD_WRITE : CMD_READ;
+		if(state == STATE_CONTW - 5'd1 && we && w2)             cmd_nx <= CMD_WRITE;
+		if(state == STATE_CONT2 - 5'd1 && !we && dbl)           cmd_nx <= CMD_READ;
+		if((state == STATE_CONT3 - 5'd1 || state == STATE_CONT4 - 5'd1) && !we && quad) cmd_nx <= CMD_READ;
 	end
 
 	if(mode == MODE_NORMAL) begin
