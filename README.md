@@ -9,13 +9,13 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 - [History](#history)
 - [Games](#games)
+  - [Installation](#installation)
   - [Supported](#supported)
   - [Not yet](#not-yet)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
   - [Floorplan](#floorplan)
 - [Screenshots](#screenshots)
-- [Installation](#installation)
 - [Controls](#controls)
 - [Status](#status)
   - [Todo](#todo)
@@ -28,12 +28,80 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 ## History
 
-**20261101** (`a928331`): first release, the ParaParaParadise family. NVRAM saved on OSD open,
-Left/Right on the D-pad, ppd's overseas cabinet value. `docs/ROADMAP.md` has the progress by phase.
+**20261101**
+* First release - ParaParaParadise and clones only
+* **READ the docs**
+
 
 ## Games
+### Installation
 
-The ParaParaParadise family (`firebeat_ppp`) are the only games currently supported as each family has different hardware...
+A 128 MB SDRAM module is required.
+
+#### 1. Core and .mra
+
+* Take the latest `*.rbf` from `releases/` and put it in `_Arcade/cores`, renamed to drop the
+  `Arcade-` prefix (`Arcade-Firebeat_YYYYMMDD.rbf` becomes `Firebeat_YYYYMMDD.rbf`). MiSTer launches
+  the highest-sorting match for `<rbf>Firebeat</rbf>`, and a `Firebeat_*.rbf` sorts above every
+  `Arcade-Firebeat_*.rbf`
+* Take the `*.mra` files and the `_alternatives` folder from `releases/` and put them in `_Arcade`
+  (or a subdirectory starting with an underscore, e.g. `_Arcade/_Firebeat`)
+* Put the MAME ROM sets (`ppp.zip`, `ppp11.zip`, ...; merged or split) in `games/mame`
+
+#### 2. Discs
+
+Each set's two discs go in a folder named after the set, under `games/`, with MAME's file names:
+
+| Game | Folder | Program CD | Audio CD |
+|-|-|-|-|
+| ParaParaParadise v1.1 | `games/ppp11/` | `gc977jaa01.chd` | `gc977jaa02.chd` |
+| ParaParaParadise 1st Mix Plus | `games/ppp1mp/` | `a11jaa01.chd` | `a11jaa02.chd` |
+| ParaParaParadise | `games/ppp/` | `977jaa01.chd` | `977jaa02.chd` |
+| ParaParaDancing | `games/ppd/` | `977kaa01.chd` | `977kaa02.chd` |
+
+Mount both from the OSD after loading the game: **Program CD** the `...01` disc, **Audio CD** the
+`...02` disc.
+
+e.g. for ParaParaParadise
+
+![PXL_20261101_223430733.jpg](docs/setup/PXL_20261101_223430733.jpg)
+
+MAME's CHDs need `MiSTer_Firebeat`, a Main_MiSTer build with the Firebeat CHD service (branch
+`firebeat-chd`). Put it at `/media/fat/MiSTer_Firebeat` and add to `MiSTer.ini`:
+
+```
+[Firebeat*]
+main=MiSTer_Firebeat
+```
+
+Raw `.bin` images (from `chdman extractcd`) should work with the standard Main.
+
+#### 3. First boot: install from Test mode
+
+On first boot it will stop at **E160 BACKUPRAM ERROR** and **E124 FLASH DATA ERROR**
+![20261101_223513-screen.png](docs/setup/20261101_223513-screen.png)
+
+Once, per game:
+
+
+1. Press **Test** to enter Test mode.
+2. **SOUND FLASH INIT** (seventh entry; Left/Right to move, Start to select)
+
+![20261101_224003-screen.png](docs/setup/20261101_224003-screen.png)
+![20261101_224009-screen.png](docs/setup/20261101_224009-screen.png)
+
+3. **ALL FACTORY SETTINGS** (thirteenth entry), then YES.
+
+![20261101_224022-screen.png](docs/setup/20261101_224022-screen.png)
+![20261101_224027-screen.png](docs/setup/20261101_224027-screen.png)
+![20261101_224032-screen.png](docs/setup/20261101_224032-screen.png)
+
+
+4. Open the OSD so the NVRAM is saved ("Saving..." shows briefly; the OSD's Autosave option, on by
+   default), then reset (OSD, "Reset and close OSD").
+
+The game then boots to its warning screen and attract mode.
+
 
 ### Supported
 
@@ -93,75 +161,6 @@ Not generated yet; it comes with the first release.
 ### ParaParaParadise v1.1
 
 ![ppp11 title](docs/screenshots/phase3_ppp11_title.png)
-
-## Installation
-
-A 128 MB SDRAM module is required.
-
-### 1. Core and .mra
-
-* Take the latest `*.rbf` from `releases/` and put it in `_Arcade/cores`, renamed to drop the
-  `Arcade-` prefix (`Arcade-Firebeat_YYYYMMDD.rbf` becomes `Firebeat_YYYYMMDD.rbf`). MiSTer launches
-  the highest-sorting match for `<rbf>Firebeat</rbf>`, and a `Firebeat_*.rbf` sorts above every
-  `Arcade-Firebeat_*.rbf`
-* Take the `*.mra` files and the `_alternatives` folder from `releases/` and put them in `_Arcade`
-  (or a subdirectory starting with an underscore, e.g. `_Arcade/_Firebeat`)
-* Put the MAME ROM sets (`ppp.zip`, `ppp11.zip`, ...; merged or split) in `games/mame`
-
-### 2. Discs
-
-Each set's two discs go in a folder named after the set, under `games/`, with MAME's file names:
-
-| Game | Folder | Program CD | Audio CD |
-|-|-|-|-|
-| ParaParaParadise v1.1 | `games/ppp11/` | `gc977jaa01.chd` | `gc977jaa02.chd` |
-| ParaParaParadise 1st Mix Plus | `games/ppp1mp/` | `a11jaa01.chd` | `a11jaa02.chd` |
-| ParaParaParadise | `games/ppp/` | `977jaa01.chd` | `977jaa02.chd` |
-| ParaParaDancing | `games/ppd/` | `977kaa01.chd` | `977kaa02.chd` |
-
-Mount both from the OSD after loading the game: **Program CD** the `...01` disc, **Audio CD** the
-`...02` disc.
-
-e.g. for ParaParaParadise
-
-![PXL_20261101_223430733.jpg](docs/setup/PXL_20261101_223430733.jpg)
-
-MAME's CHDs need `MiSTer_Firebeat`, a Main_MiSTer build with the Firebeat CHD service (branch
-`firebeat-chd`). Put it at `/media/fat/MiSTer_Firebeat` and add to `MiSTer.ini`:
-
-```
-[Firebeat*]
-main=MiSTer_Firebeat
-```
-
-Raw `.bin` images (from `chdman extractcd`) should work with the standard Main.
-
-### 3. First boot: install from Test mode
-
-On first boot it will stop at **E160 BACKUPRAM ERROR** and **E124 FLASH DATA ERROR**
-![20261101_223513-screen.png](docs/setup/20261101_223513-screen.png)
-
-Once, per game:
-
-
-1. Press **Test** to enter Test mode.
-2. **SOUND FLASH INIT** (seventh entry; Left/Right to move, Start to select)
-
-![20261101_224003-screen.png](docs/setup/20261101_224003-screen.png)
-![20261101_224009-screen.png](docs/setup/20261101_224009-screen.png)
-
-3. **ALL FACTORY SETTINGS** (thirteenth entry), then YES.
-
-![20261101_224022-screen.png](docs/setup/20261101_224022-screen.png)
-![20261101_224027-screen.png](docs/setup/20261101_224027-screen.png)
-![20261101_224032-screen.png](docs/setup/20261101_224032-screen.png)
-
-
-4. Open the OSD so the NVRAM is saved ("Saving..." shows briefly; the OSD's Autosave option, on by
-   default), then reset (OSD, "Reset and close OSD").
-
-The game then boots to its warning screen and attract mode.
-
 
 ### Development builds
 
