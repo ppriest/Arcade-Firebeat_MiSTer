@@ -120,8 +120,8 @@ localparam STATE_CONT   = STATE_START+RASCAS_DELAY;
 // data bus is now captured ONCE, unconditionally, into a register the I/O
 // cell can hold, and the four lanes are taken from that register a cycle
 // later. See the comment above the lane captures for why.
-// [Firebeat] +3: a second register, dq_in2, between dq_in and the lanes (below).
-localparam STATE_READ0  = STATE_CONT+CAS_LATENCY+5'd3;
+// [Firebeat] +4: two more registers, dq_in2 and dq_in3, between dq_in and the lanes (below).
+localparam STATE_READ0  = STATE_CONT+CAS_LATENCY+5'd4;
 localparam STATE_READ1  = STATE_READ0+5'd1;
 localparam STATE_READ2  = STATE_READ0+5'd2;
 localparam STATE_READ3  = STATE_READ0+5'd3;
@@ -143,7 +143,7 @@ localparam STATE_READ11 = STATE_READ0+5'd11;
 localparam STATE_READ12 = STATE_READ0+5'd12;
 localparam STATE_READ13 = STATE_READ0+5'd13;
 localparam STATE_READ14 = STATE_READ0+5'd14;
-localparam STATE_READ15 = STATE_READ0+5'd15;  // 25 at tRCD 3, CL 3: the 5-bit state holds it
+localparam STATE_READ15 = STATE_READ0+5'd15;  // 26 at tRCD 3, CL 3: the 5-bit state holds it
 
 reg  [4:0] state = 5'd0;   // [Hornet] 5 bits, so that CL3 and tRCD 3 fit the double read;   // upstream relies on Quartus's zero-power-up default for
                             // FPGA registers (real hardware); explicit here since plain
@@ -192,7 +192,8 @@ reg [63:0] doutb;    // [GX] a double read's second granule
 reg [63:0] doutc;    // [Firebeat] a quad read's third and fourth
 reg [63:0] doutd;
 reg [15:0] dq_in;    // the bus, captured once per cycle -- see the lane captures
-reg [15:0] dq_in2;   // [Firebeat] dq_in a cycle later, the lanes' source
+reg [15:0] dq_in2;   // [Firebeat] dq_in a cycle later
+reg [15:0] dq_in3;   // [Firebeat] dq_in2 a cycle later, the lanes' source
 
 assign dout0 = dout;
 assign dout0b = doutb;
@@ -318,29 +319,33 @@ always @(posedge clk) begin
 	// [Firebeat] At 133.33 MHz dq_in -> the 256 lane bits failed setup by up to 0.33 ns (two
 	// seeds; the I/O cells of DQ8 and DQ11 are far from the lanes' flops). dq_in2 takes the long
 	// route with a fan-out of one, and fans out from the fabric.
+	// [Firebeat] At 88% of the ALMs dq_in -> dq_in2 failed in turn (-0.610 ns at seed 5, DQ11):
+	// dq_in2 was placed by its fan-out, near the lanes. dq_in3 now takes the fan-out, and the
+	// pin-to-lanes distance is split over two fan-out-of-one hops.
 	dq_in2 <= dq_in;
+	dq_in3 <= dq_in2;
 
 	// Burst-of-4 read capture: one 16-bit lane per cycle across the four
 	// STATE_READ0..STATE_READ3 cycles, ascending address order (lane 0 =
 	// lowest address = dout[15:0]) matching ACCESS_TYPE=sequential above.
 	// Write completion (ack, no data capture) shares STATE_READ3 for a
 	// single uniform completion point -- see PROVENANCE.md for why.
-	if (state == STATE_READ0 && ram_req && !we) dout[15:0]  <= dq_in2;
-	if (state == STATE_READ1 && ram_req && !we) dout[31:16] <= dq_in2;
-	if (state == STATE_READ2 && ram_req && !we) dout[47:32] <= dq_in2;
-	if (state == STATE_READ3 && ram_req && !we) dout[63:48] <= dq_in2;
-	if (state == STATE_READ4 && ram_req && dbl) doutb[15:0]  <= dq_in2;   // [GX]
-	if (state == STATE_READ5 && ram_req && dbl) doutb[31:16] <= dq_in2;
-	if (state == STATE_READ6 && ram_req && dbl) doutb[47:32] <= dq_in2;
-	if (state == STATE_READ7 && ram_req && dbl) doutb[63:48] <= dq_in2;
-	if (state == STATE_READ8  && ram_req && quad) doutc[15:0]  <= dq_in2;   // [Firebeat]
-	if (state == STATE_READ9  && ram_req && quad) doutc[31:16] <= dq_in2;
-	if (state == STATE_READ10 && ram_req && quad) doutc[47:32] <= dq_in2;
-	if (state == STATE_READ11 && ram_req && quad) doutc[63:48] <= dq_in2;
-	if (state == STATE_READ12 && ram_req && quad) doutd[15:0]  <= dq_in2;
-	if (state == STATE_READ13 && ram_req && quad) doutd[31:16] <= dq_in2;
-	if (state == STATE_READ14 && ram_req && quad) doutd[47:32] <= dq_in2;
-	if (state == STATE_READ15 && ram_req && quad) doutd[63:48] <= dq_in2;
+	if (state == STATE_READ0 && ram_req && !we) dout[15:0]  <= dq_in3;
+	if (state == STATE_READ1 && ram_req && !we) dout[31:16] <= dq_in3;
+	if (state == STATE_READ2 && ram_req && !we) dout[47:32] <= dq_in3;
+	if (state == STATE_READ3 && ram_req && !we) dout[63:48] <= dq_in3;
+	if (state == STATE_READ4 && ram_req && dbl) doutb[15:0]  <= dq_in3;   // [GX]
+	if (state == STATE_READ5 && ram_req && dbl) doutb[31:16] <= dq_in3;
+	if (state == STATE_READ6 && ram_req && dbl) doutb[47:32] <= dq_in3;
+	if (state == STATE_READ7 && ram_req && dbl) doutb[63:48] <= dq_in3;
+	if (state == STATE_READ8  && ram_req && quad) doutc[15:0]  <= dq_in3;   // [Firebeat]
+	if (state == STATE_READ9  && ram_req && quad) doutc[31:16] <= dq_in3;
+	if (state == STATE_READ10 && ram_req && quad) doutc[47:32] <= dq_in3;
+	if (state == STATE_READ11 && ram_req && quad) doutc[63:48] <= dq_in3;
+	if (state == STATE_READ12 && ram_req && quad) doutd[15:0]  <= dq_in3;
+	if (state == STATE_READ13 && ram_req && quad) doutd[31:16] <= dq_in3;
+	if (state == STATE_READ14 && ram_req && quad) doutd[47:32] <= dq_in3;
+	if (state == STATE_READ15 && ram_req && quad) doutd[63:48] <= dq_in3;
 	if (state == (quad ? STATE_READ15 : dbl ? STATE_READ7 : STATE_READ3) && ram_req) begin
 		active <= 0;
 		ram_req <= 0;

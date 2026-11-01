@@ -12,12 +12,15 @@ MiSTer arcade core for Firebeat. Built with the `mister-arcade-core` skill.
 ## Rules
 
 - Never touch `sys/`.
-- Build with `python scripts/build_staged.py`, never in the tree. Commit first; it
-  refuses a dirty tree.
-- No JTAG while Quartus runs, and the reverse. Use `scripts/read_issp.py` and
-  `scripts/probe.py`, which take `hwlock.py`.
-- Deploy only with `scripts/deploy.py`. Launch and screenshot with `scripts/hw.py`,
-  `--native` for pixel comparison. Deploying is always fine; launching or resetting takes the
+- Everything that reaches the board or its probes goes through the mister MCP: no ssh, scp,
+  `quartus_stp` or scripts of our own against it. A tool that is missing something goes to the
+  MCP's session, not round it. MAME runs may be local.
+- Build with the MCP's `build_start`, never in the tree. Commit first; it refuses a dirty tree.
+- No JTAG while Quartus runs, and the reverse. Probes only through the MCP's `probe_*` tools,
+  which take the lock.
+- Deploy only with `mister_deploy`. Launch and screenshot with `mister_launch` and
+  `mister_screenshot`; state dumps with `mister_memdump`, `mister_get` and
+  `scripts/fetch_dump.py`. Deploying is always fine; launching or resetting takes the
   board from whoever is using it, so only when asked. Announce long compiles: they block every
   session's JTAG (`docs/WORKFLOW.md`, section 2a). JTAG has priority: a session waiting for the
   Blaster reserves it, and no new build or simulation starts while that reservation stands

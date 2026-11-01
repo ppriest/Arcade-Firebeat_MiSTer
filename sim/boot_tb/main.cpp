@@ -12,7 +12,8 @@
 // scripts/mame_boot_capture.py --events). The board's frames run behind MAME's (its RAM test and
 // disc reads take longer), so the events are placed from an anchor: MAME's last ATA register write
 // before the first event. When the board makes that write, an event at MAME frame F fires
-// F - (the anchor's MAME frame) frames later.
+// F - (the anchor's MAME frame) frames later. With +state there is no anchor: FRAME counts from the
+// run's first frame.
 //
 // +reset_at=CLOCK: the board reset for 16 clocks at the first clock from CLOCK with no SDRAM or slot
 // request open, as the OSD's "Reset" after mounting the discs; they must stay mounted.
@@ -283,7 +284,7 @@ int main(int argc, char **argv) {
         fclose(io);
         fprintf(stderr, "MAME: %zu compared accesses in %zu streams\n", n, st.size());
         // the anchor: MAME's last ATA register write before the first event
-        if (!evs.empty()) {
+        if (!evs.empty() && stf.empty()) {
             auto &aw = st["ATA_W"].mame;
             for (size_t i = 0; i < aw.size() && aw[i].frame < evs[0].f; i++) { anchor_idx = (long)i + 1; anchor_mame = aw[i].frame; }
             fprintf(stderr, "anchor: ATA write %ld, MAME frame %ld\n", anchor_idx, anchor_mame);
@@ -344,7 +345,7 @@ int main(int argc, char **argv) {
     long frames = 0;
     bool vb = false;
     long dev_total = 0;
-    long anchor_rtl = -1;
+    long anchor_rtl = stf.empty() ? -1 : 0;   // +state: events count from the run's first frame
     // the bench's own state, saved with the model
     auto bench_io = [&](auto &os, bool out) {
         auto raw = [&](void *p, size_t n) {

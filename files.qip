@@ -14,7 +14,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_pc16552.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_spu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_rtc65271.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_flash.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_ymz_shell.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_ymz280b.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_gcu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_gcu_shell.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_atapi.sv
@@ -24,4 +24,5 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_dump.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_board.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/firebeat_sys.sv
 set_global_assignment -name SDC_FILE Firebeat.sdc
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mame_keys.sv
 set_global_assignment -name SYSTEMVERILOG_FILE Firebeat.sv

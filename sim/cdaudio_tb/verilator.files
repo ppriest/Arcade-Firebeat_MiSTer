@@ -1,0 +1,2 @@
+rtl/board/fb_cd_slot.sv
+sim/cdaudio_tb/tb_cdaudio.sv

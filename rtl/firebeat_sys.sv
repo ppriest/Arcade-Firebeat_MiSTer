@@ -110,7 +110,9 @@ module firebeat_sys (
     // the board, for probes
     output logic [31:0]  brd_pc,
     output logic         brd_bad,
-    output logic         brd_reset
+    output logic         brd_reset,
+    output logic signed [15:0] aud_l, aud_r,
+    output logic         nv_wr           // fb_board: the NVRAM file is stale
 );
 
 localparam logic [26:0] FLASH_BASE = 27'h2000000;
@@ -307,7 +309,7 @@ fb_board u_board (
     .vm_read, .vm_write, .vm_addr, .vm_burst, .vm_be, .vm_wdata, .vm_be_hi, .vm_wdata_hi,
     .vm_waitn, .vm_rvalid, .vm_rdata(d_rdata), .vm_rdata_hi(d_rdata_hi),
     .img_mounted, .img_size, .sd_lba, .sd_blk_cnt, .sd_rd, .sd_ack, .sd_buff_wr, .sd_buff_dout,
-    .vblank, .in0, .in1, .in2, .in3, .sensor, .cabinet_info, .control(),
+    .vblank, .in0, .in1, .in2, .in3, .sensor, .cabinet_info, .aud_l, .aud_r, .control(), .nv_wr,
     .dg_we, .dg_addr(ld_a[7:0]), .dg_data(ld_d),
     .rtc_nv_we, .rtc_nv_addr, .rtc_nv_wdata(ld_d), .rtc_nv_rdata,
     .rtc_set, .rtc_time,

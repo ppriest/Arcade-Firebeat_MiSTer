@@ -27,9 +27,6 @@ assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
-assign AUDIO_S = 0;
-assign AUDIO_L = 0;
-assign AUDIO_R = 0;
 assign AUDIO_MIX = 0;
 
 assign LED_DISK = 0;
@@ -57,7 +54,7 @@ localparam CONF_STR = {
 	"P1O[65],Dump on slave error,Off,On;",
 	"-;",
 	"R[0],Reset and close OSD;",
-	"J1,Left,Right,Start,Coin,Test,Service,Pause;",
+	"J1,Sensor 1,Sensor 2,Sensor 3,Sensor 4,Sensor 5,Start,Coin,Test,Service,Pause;",
 	"V,v",`BUILD_DATE
 };
 
@@ -159,17 +156,43 @@ wire        brd_bad, brd_reset, dump_busy, dump_held;
 reg         dump_t_q;
 always @(posedge clk_sys) dump_t_q <= status[64];
 
+// Left and Right from the D-pad (bits 1, 0); the J1 line: the sensor bars 1-5 at 4-8, Start 9,
+// Coin 10, Test 11, Service 12, Pause 13. Keyboard: MAME's keys in that layout (arrows; LCtrl LAlt
+// Space LShift Z for the bars)
+wire [31:0] key0;
+mame_keys #(.BUTTONS(5), .START(9), .COIN(10), .PAUSE(13), .SERVICE(11)) u_keys
+(
+	.clk(clk_sys), .ps2_key, .key0, .key1(), .svc_coin()
+);
+wire [31:0] j = joy | key0;
+
 // IN0 (firebeat.cpp INPUT_PORTS ppp): active low; 0 Left, 1 Right, 2 Test, 3 Service, 4 Coin,
 // 5 Start/OK; bit 6 unused high, bit 7 unused low
-wire [7:0] in0 = {1'b0, 1'b1, ~joy[6], ~joy[7], ~joy[9], ~joy[8], ~joy[5], ~joy[4]};
-reg  pause, joy10_q;
+wire [7:0] in0 = {1'b0, 1'b1, ~j[9], ~j[10], ~j[12], ~j[11], ~j[0], ~j[1]};
+reg  pause, pause_q;
 always @(posedge clk_sys) begin
-	joy10_q <= joy[10];
-	if (joy[10] && !joy10_q) pause <= ~pause;
+	pause_q <= j[13];
+	if (j[13] && !pause_q) pause <= ~pause;
 	if (reset) pause <= 1'b0;
 end
-wire [15:0] sensor[4] = '{16'd0, 16'd0, 16'd0, 16'd0};
+// SENSOR1-4 (firebeat.cpp ppp ports): active high, three sensors a bar, bar n's three bits from
+// sensor 3(n-1); bars 6-8 (ppd only) not wired
+wire [4:0]  bar = j[8:4];
+wire [15:0] sensor[4] = '{{8'd0, {2{bar[2]}}, {3{bar[1]}}, {3{bar[0]}}},
+                          {12'd0, {3{bar[3]}}, bar[2]},
+                          {13'd0, {3{bar[4]}}},
+                          16'd0};
 wire        vid_hb, vid_vb, vid_hs, vid_vs, ce_pix;
+wire signed [15:0] aud_l, aud_r;
+// the cabinet register's nibble (firebeat.cpp cabinet_r): the .mra's mod byte, ioctl index 1; 8 the
+// Japanese sets, 9 the overseas ppd (init_ppp_overseas)
+reg  [3:0] cabinet = 4'd8;
+always @(posedge clk_sys) if (ioctl_download && ioctl_wr && ioctl_index == 16'd1 && ioctl_addr == 27'd0) cabinet <= ioctl_dout[3:0];
+wire nv_wr;
+// signed, muted while paused (the board's YMZ280B and CD audio run on)
+assign AUDIO_S = 1;
+assign AUDIO_L = pause ? 16'd0 : aud_l;
+assign AUDIO_R = pause ? 16'd0 : aud_r;
 wire [7:0]  vid_r, vid_g, vid_b;
 
 assign DDRAM_CLK = clk_sys;
@@ -185,16 +208,24 @@ firebeat_sys sys (
 	.DDRAM_BUSY, .DDRAM_BURSTCNT, .DDRAM_ADDR, .DDRAM_DOUT, .DDRAM_DOUT_READY, .DDRAM_RD,
 	.DDRAM_DIN, .DDRAM_BE, .DDRAM_WE,
 	.img_mounted, .img_size, .sd_lba, .sd_blk_cnt, .sd_rd, .sd_ack, .sd_buff_wr, .sd_buff_dout,
-	.in0, .in1(8'hFF), .in2(8'hFF), .in3(8'hFF), .sensor, .cabinet_info(4'd8),
+	.in0, .in1(8'hFF), .in2(8'hFF), .in3(8'hFF), .sensor, .cabinet_info(cabinet),
 	.ce_pix, .vid_r, .vid_g, .vid_b, .vid_hs, .vid_vs, .vid_hb, .vid_vb,
 	.chk_start(issp_src[1]), .chk_sel(issp_src[2]), .pat_start(issp_src[3]), .pat_variant(issp_src[4]),
 	.test_pic(issp_src[7]),
 	.chk_busy, .chk_sum, .chk_lines, .chk_lat_sum, .chk_lat_max,
-	.scan_late, .pat_done, .dl_kb, .brd_pc, .brd_bad, .brd_reset
+	.scan_late, .pat_done, .dl_kb, .brd_pc, .brd_bad, .brd_reset, .aud_l, .aud_r, .nv_wr
 );
 
-// the NVRAM file's save: the stp revision's probe F can request one
-assign nvram_save = issp_src[5];
+// the NVRAM file's save: Main uploads it on the next OSD open after this rises (menu.cpp
+// MENU_SAVE_CHECK); dirty from the board's first flash or RTC write after the last upload. The stp
+// revision's probe F can also request one.
+reg  nv_dirty = 1'b0, nv_up_q = 1'b0;
+always @(posedge clk_sys) begin
+	nv_up_q <= ioctl_upload;
+	if (ioctl_upload && !nv_up_q) nv_dirty <= 1'b0;
+	else if (nv_wr) nv_dirty <= 1'b1;
+end
+assign nvram_save = nv_dirty | issp_src[5];
 
 ///////////////////////   VIDEO   ////////////////////////////////
 

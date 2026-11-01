@@ -1,9 +1,9 @@
-# {{HARDWARE_NAME}} core for MiSTer
+# Firebeat core for MiSTer
 
-A MiSTer FPGA core for {{MANUFACTURER}}'s {{HARDWARE_NAME}} arcade hardware (MAME's
-`{{MAME_DRIVER}}`), built with Quartus Prime 17.0.2 Lite for the DE10-nano.
+A MiSTer FPGA core for Konami's Firebeat arcade hardware (MAME's `konami/firebeat.cpp`), built
+with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
-**Status: {{STATUS_ONE_LINE}}.**
+**Status: first release, `Arcade-Firebeat_20261101.rbf`. ParaParaParadise boots and plays on the board.**
 
 ## Contents
 
@@ -11,7 +11,6 @@ A MiSTer FPGA core for {{MANUFACTURER}}'s {{HARDWARE_NAME}} arcade hardware (MAM
 - [Games](#games)
   - [Supported](#supported)
   - [Not yet](#not-yet)
-  - [Out of scope for now](#out-of-scope-for-now)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
   - [Floorplan](#floorplan)
@@ -19,7 +18,6 @@ A MiSTer FPGA core for {{MANUFACTURER}}'s {{HARDWARE_NAME}} arcade hardware (MAM
 - [Installation](#installation)
 - [Controls](#controls)
 - [Status](#status)
-  - [Features](#features)
   - [Todo](#todo)
   - [Resource usage](#resource-usage)
 - [AI Attestation](#ai-attestation)
@@ -30,53 +28,55 @@ A MiSTer FPGA core for {{MANUFACTURER}}'s {{HARDWARE_NAME}} arcade hardware (MAM
 
 ## History
 
-{{HISTORY}}
-<!-- One paragraph per release or milestone, newest first. Name the commit for anything that
-     ran on hardware. "No release yet" is a valid entry. -->
+**20261101** (`a928331`): first release, the ParaParaParadise family. NVRAM saved on OSD open,
+Left/Right on the D-pad, ppd's overseas cabinet value. `docs/ROADMAP.md` has the progress by phase.
 
 ## Games
 
-{{SCOPE_ONE_PARAGRAPH}}
-<!-- Which board types / machine configs the core targets, how many sets, SDRAM size they need. -->
+The ParaParaParadise family (`firebeat_ppp`) are the only games currently supported as each family has different hardware...
 
 ### Supported
 
-Sets with an `.mra` in `releases/`. {{WHICH_HAVE_RUN_ON_HARDWARE}}
+Sets with an `.mra` in `releases/` (ppp1mp, a clone of ppp, in `_alternatives/_ParaParaParadise`).
+ppp11 and ppp1mp have run on the board.
 
-| Name | Year | Manufacturer | {{PER_CORE_COLUMNS}} | Notes |
+| Name | Year | Manufacturer | Discs | Notes |
 |-|-|-|-|-|
-{{SUPPORTED_SETS_TABLE}}
+| ParaParaParadise v1.1 (`ppp11`) | 2000 | Konami | `gc977jaa01`, `gc977jaa02` | the reference set |
+| ParaParaParadise 1st Mix Plus (`ppp1mp`) | 2000 | Konami | `a11jaa01`, `a11jaa02` | dongle a bad dump in MAME |
+| ParaParaParadise (`ppp`) | 2000 | Konami | `977jaa01`, `977jaa02` | program CD a bad dump in MAME |
+| ParaParaDancing (`ppd`) | 2000 | Konami | `977kaa01`, `977kaa02` | program CD a bad dump in MAME; sensor bars 6-8 not mapped |
 
 ### Not yet
 
-In-scope sets the RTL does not take yet, and why.
-
 | Name | Why |
 |-|-|
-{{NOT_YET_TABLE}}
-
-### Out of scope for now
-
-| MAME description | Why |
-|-|-|
-{{OUT_OF_SCOPE_TABLE}}
-<!-- Reasons that count: MACHINE_NOT_WORKING in MAME, a device MAME lacks, ROM set larger than the
-     SDRAM module, a second monitor, a bootleg with different sound hardware. -->
+| Pop'n Music 4-8, Animelo, Mickey Tunes | the SPU board (68000, RF5C400, 32 MB wave RAM, DVD-ROM): Phase 8, in progress |
+| beatmania III and its updates | SPU board plus a hard disk and floppy |
+| Keyboardmania and its updates | two GCUs on two screens, an XT446 synth |
 
 ## Hardware
 
 | Chip | Function | Status |
 |-|-|-|
-{{CHIP_TABLE}}
-<!-- One row per chip. Status says where the RTL came from (written here / vendored from X with
-     changes / MAME transcription) and what it has been checked against. -->
+| PPC403GCX, 66 MHz | main CPU | Hornet core's `ppc403_core`, vendored; caches (I 16 KB, D 8 KB write-back) and DMA channel 3 written here; matches MAME over 2,000,000 instructions (`sim/cpu_tb`) |
+| K057714 GCU | blitter, display lists, four display contexts, CRTC; 32 MB VRAM in DDR3 | written from MAME's model; VRAM and frames equal to MAME's on the captured windows (`sim/gcu_tb`, `sim/disp_tb`) |
+| YMZ280B | 8-voice ADPCM/PCM from the sound flash | written from MAME's model; bench against a MAME capture |
+| ATA, two CD-ROM drives | program CD and audio CD with CD audio | ATAPI written from MAME's model, over hps_io's image slots |
+| 3 x 29F016A flash | program and samples, written by the game's install | written from MAME's model; SOUND FLASH INIT equal to MAME's (`sim/boot_tb`) |
+| RTC65271 | clock and 4 KB NVRAM | written from MAME's model |
+| PC16552D | network UART, unused by these sets | registers only (`docs/HACKS.md`) |
+| DS1991 dongle | serial, mode, licence | written from `firebeat.cpp` |
 
 ### Video timing
 
-{{VIDEO_TIMING}}
-<!-- Dot clock, dots per line, lines per frame, the resulting line and frame rates, the visible
-     area, and where the numbers come from (CRTC registers, MAME set_raw, a PCB measurement). Say
-     if MAME's declared rate differs. -->
+These run at 24kHz - so don't expect an output on your 15kHz display...
+
+512 x 384 visible of 685 x 416, pixel clock 16.667 MHz (`clk_sys` / 4): 24.33 kHz lines, 58.49 Hz
+frames. The game switches the GCU to this mode (`firebeat.cpp` `control_w`); before that the
+power-on mode is 640 x 480 of 800 x 525. MAME's `set_raw` declares 640 x 480 at 25.175 MHz,
+59.94 Hz, which ParaParaParadise does not use. The board's 16.6666 MHz crystal is approximated by
+`clk_sys` / 4, 4 ppm off (`docs/HACKS.md`).
 
 ### Floorplan
 
@@ -86,114 +86,140 @@ site, coloured by the block owning most of it, brighter when fuller. The thin co
 DSP; the empty area at the top right is the HPS; grey is the MiSTer framework. LUT counts are
 combinational cells, two per ALM.
 
-![Floorplan of Firebeat](docs/floorplan/Firebeat.png)
+Not generated yet; it comes with the first release.
 
 ## Screenshots
 
-### {{GAME}}
+### ParaParaParadise v1.1
 
-![{{set}} title](docs/screenshots/{{set}}/title.png)
+![ppp11 title](docs/screenshots/phase3_ppp11_title.png)
 
 ## Installation
 
-{{SDRAM_REQUIREMENT}}
-<!-- e.g. "A 32 MB SDRAM module is required." -->
+A 128 MB SDRAM module is required.
+
+### 1. Core and .mra
 
 * Take the latest `*.rbf` from `releases/` and put it in `_Arcade/cores`, renamed to drop the
   `Arcade-` prefix (`Arcade-Firebeat_YYYYMMDD.rbf` becomes `Firebeat_YYYYMMDD.rbf`). MiSTer launches
   the highest-sorting match for `<rbf>Firebeat</rbf>`, and a `Firebeat_*.rbf` sorts above every
   `Arcade-Firebeat_*.rbf`
 * Take the `*.mra` files and the `_alternatives` folder from `releases/` and put them in `_Arcade`
-  (or a subdirectory starting with an underscore, e.g. `_Arcade/_{{HARDWARE_NAME}}`)
-* Put the MAME merged or split ROM sets in `games/mame`{{BIOS_NOTE}}
+  (or a subdirectory starting with an underscore, e.g. `_Arcade/_Firebeat`)
+* Put the MAME ROM sets (`ppp.zip`, `ppp11.zip`, ...; merged or split) in `games/mame`
 
-To run a development build instead: `python scripts/build_staged.py`, then `python scripts/deploy.py`
-with a `mister.env` (see `scripts/deploy.py`).
+### 2. Discs
+
+Each set's two discs go in a folder named after the set, under `games/`, with MAME's file names:
+
+| Game | Folder | Program CD | Audio CD |
+|-|-|-|-|
+| ParaParaParadise v1.1 | `games/ppp11/` | `gc977jaa01.chd` | `gc977jaa02.chd` |
+| ParaParaParadise 1st Mix Plus | `games/ppp1mp/` | `a11jaa01.chd` | `a11jaa02.chd` |
+| ParaParaParadise | `games/ppp/` | `977jaa01.chd` | `977jaa02.chd` |
+| ParaParaDancing | `games/ppd/` | `977kaa01.chd` | `977kaa02.chd` |
+
+Mount both from the OSD after loading the game: **Program CD** the `...01` disc, **Audio CD** the
+`...02` disc.
+
+MAME's CHDs need `MiSTer_Firebeat`, a Main_MiSTer build with the Firebeat CHD service (branch
+`firebeat-chd`). Put it at `/media/fat/MiSTer_Firebeat` and add to `MiSTer.ini`:
+
+```
+[Firebeat*]
+main=MiSTer_Firebeat
+```
+
+Raw `.bin` images (from `chdman extractcd`) should work with the standard Main.
+
+### 3. First boot: install from Test mode
+
+A new board stops at **E160 BACKUPRAM ERROR** and **E124 FLASH DATA ERROR**: the sound samples
+are copied from the disc into flash, and the settings into the RTC, by the game's own Test mode.
+Once, per game:
+
+1. Press **Test** to enter Test mode.
+2. **SOUND FLASH INIT** (seventh entry; Left/Right to move, Start to select)
+3. **ALL FACTORY SETTINGS** (thirteenth entry), then YES.
+4. Open the OSD so the NVRAM is saved, then reset (OSD, "Reset and close OSD").
+
+The game then boots to its warning screen and attract mode.
+
+### Development builds
+
+`python scripts/build_staged.py`, then `python scripts/deploy.py` with a `mister.env` (see
+`scripts/deploy.py`).
 
 ## Controls
 
-{{CONTROLS}}
+| Input | Use |
+|-|-|
+| D-pad or stick left, right | menu select |
+| Sensor 1-5 | the five sensor bars (hands over the bars) |
+| Start | Start / OK |
+| Coin, Test, Service | cabinet switches |
+| Pause | suspends the CPU |
 
-Keyboard, MAME's defaults: arrows / R F D G, buttons LCtrl LAlt Space LShift Z X / A S Q W E,
-Start 1 / 2, Coin 5 / 6; F2 service switch, 9 / 0 service coins, P pause.
-<!-- The J1 line's button names in order, what Start/Coin/Pause/Service map to, and per-game
-     exceptions. Must agree with the .mra <buttons> positions. Light gun / trackball / mouse
-     options if any. -->
+Keyboard, MAME's default keys: Left and Right on the arrows, sensors 1-5 on LCtrl LAlt Space
+LShift Z, Start 1, Coin 5; F2 Test, P pause.
 
 ## Status
 
 Known issues:
-{{KNOWN_ISSUES}}
-<!-- Bulleted. Bold the ones a player would notice first. -->
+
+* **No 15 kHz output** (24 kHz analog only).
+* ppd's sensor bars 6-8 are not mapped.
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be
 right. `docs/HACKS.md` lists this core's own approximations. `docs/ROADMAP.md` is the plan and its
 progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
-### Features
-
-<!-- Keep every line; mark each done / not yet / n-a so the gaps are visible. -->
-
-* DIP switches from the `.mra` (`DIP;` in the OSD): {{DIPS_STATUS}}
-* Inputs: {{INPUTS_STATUS}}
-* CRT Adjust (H-Position, V-Shift, H-Size, V-Size): {{CRT_ADJUST_STATUS}}
-* HDMI scaling (integer scale, crop, crop offset): {{SCALING_STATUS}}
-* HDMI rotation (orientation): {{ROTATION_STATUS}}
-* Flip screen, HDMI and analog, from the OSD or the DIP (fake DIP where the game has none): {{FLIP_STATUS}}
-* HDMI-only options hidden under direct video: {{DIRECT_VIDEO_STATUS}}
-* Peripheral menus shown only for games that use them: {{PERIPHERAL_MENUS_STATUS}}
-* Rotary joysticks (Ikari Warriors controls, GRS keystroke mode), where used: {{ROTARY_STATUS}}
-* Light guns: mouse, analog stick and synthetic crosshair, where used: {{GUN_STATUS}}
-* Audio mix (Mono, None, 25%, 50%): {{AUDIO_MIX_STATUS}}
-* Hiscore saving (`hiscore.v`, with autosave): {{HISCORE_STATUS}}
-* NVRAM / EEPROM saved to the `.nvm` file: {{NVRAM_STATUS}}
-* Fast ROM loading via DDR: {{DDR_LOAD_STATUS}}
-* Pause (with CPU suspended): {{PAUSE_STATUS}}
-* Sound: {{SOUND_STATUS}}
-* Savestates (optional): {{SAVESTATE_STATUS}}
-* Cheats (optional): {{CHEATS_STATUS}}
-
 ### Todo
 
-- [ ] {{TODO_ITEM}}
+- [ ] Phase 6 standard features: DIPs, CRT Adjust, flip screen, audio mix
+- [ ] Pop'n Music (Phase 8)
+- [ ] Release: floorplan, Downloader database
 
 ### Resource usage
 
-{{WHICH_BUILD}} on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7, {{TIMING_ONE_LINE}}:
+`Firebeat` revision at `a928331` (the 20261101 release), fitter seed 2, on the DE10-nano's Cyclone V
+5CSEBA6, speed grade 7, every clock positive (`clk_sys` +0.499 ns, SDRAM +0.617 ns, HDMI +0.269 ns):
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | {{ALMS}} | 41,910 |
-| Block memory bits | {{BITS}} | 5,662,720 |
-| RAM blocks | {{M10K}} | 553 |
-| DSP blocks | {{DSP}} | 112 |
-| PLLs | {{PLLS}} | 6 |
+| Logic (ALMs) | 36,769 | 41,910 |
+| Block memory bits | 1,170,720 | 5,662,720 |
+| RAM blocks | 184 | 553 |
+| DSP blocks | 66 | 112 |
+| PLLs | 3 | 6 |
 
-<!-- Name the commit and the revision the numbers came from. One line on which resource is the
-     one to watch. -->
+Logic is the one to watch: 88% of ALMs; the build before it missed timing at four seeds.
 
 ## AI Attestation
 
-This core is being developed with heavy use of a frontier coding assistant. {{AUTHOR_FAMILIARITY}}
+This core is being developed with heavy use of a frontier coding assistant.
 
 ## Verification
 
 Not PCB-validated. MAME is the accuracy reference, with its own acknowledged uncertainties noted
 where they matter.
 
-* {{VERIFICATION_BULLET}}
-<!-- One bullet per thing that was diffed against MAME, with the count: CPU trace (N accesses),
-     video frames (N pixels of N), SDRAM image readback, .mra byte-for-byte against ROM_START,
-     sound against a transcription of MAME's mixer. Numbers, not adjectives. -->
+* CPU and caches: 2,000,000 instructions of ppp11's play loop and 1,777,257 of its loading loop
+  equal to MAME's (`sim/cpu_tb`).
+* Board bus: 302,908 device accesses in MAME's order (`sim/board_tb`).
+* Boot from power-on: 6,000 MAME frames, every ATA data word (7,098,647) equal to MAME's
+  (`sim/boot_tb`).
+* Flash install: 15,244,959 flash writes in MAME's order, the three chips equal at the end.
+* GCU: VRAM 0 pixels differing on the attract and play windows (`sim/gcu_tb`); the shown frame
+  equal to MAME's `screen_out` (`sim/disp_tb`).
 
 ## Acknowledgements
 
 - **Sorgelig** and the **MiSTer-devel team** for the
-  [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) framework{{SDRAM_CREDIT}}.
-- The **MAMEdev team** — {{DRIVER_AUTHORS}} — for `{{MAME_DRIVER}}` and the device emulations that
-  are this core's specification.
-{{VENDORED_MODULE_CREDITS}}
-<!-- One line per upstream in THIRD-PARTY.md: author, what was taken, link. -->
+  [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) framework.
+- The **MAMEdev team** — Ville Linde and the contributors to `firebeat.cpp`, `k057714.cpp` and the
+  device files — for the emulation that is this core's specification.
+- The Konami Hornet core's PPC403 (`rtl/cpu/ppc403/PROVENANCE.md`).
 
 ## Layout
 
@@ -203,7 +229,7 @@ Standard [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) stru
 | - | - |
 | `sys` | MiSTer framework, vendored from the template, never edited |
 | `rtl` | core source; vendored modules carry a `PROVENANCE.md` |
-| `releases` | `.rbf` and `.mra` files; clones in `_alternatives` |
+| `releases` | `.rbf` and `.mra` files; clones in `_alternatives`, work in progress in `_dev` |
 | `docs` | roadmap, workflow, release process, kludges, hacks, lessons |
 | `sim` | ModelSim and Verilator testbenches |
 | `scripts` | build, deploy, capture and verification tooling |
@@ -212,8 +238,8 @@ Standard [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) stru
 
 ## License
 
-{{LICENCE}} (see `LICENSE`). Imported components keep their own licences; `THIRD-PARTY.md` has the
-detail and every modified vendored file states the change in its header.
+GPL-3.0 (see `LICENSE`). Imported components keep their own licences; every modified vendored
+file states the change in its header.
 
 Game ROMs contain copyrighted material and are not included. Obtaining them is your
 responsibility.

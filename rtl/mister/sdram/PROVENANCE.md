@@ -9,8 +9,9 @@ read in KonamiGX, CAS latency 3 / tRCD 3 room and port 1's two-halfword write in
 Edits here are marked `[Firebeat]`: tRCD, CAS latency and the refresh interval are module
 parameters (defaults 3, 3, 500 clocks) for the controller at 133.33 MHz; port 0's quad read
 (`quad0`: READs at +0, +4, +8, +12 to one open row, the last precharging; 16 halfwords in
-`dout0`..`dout0d`, 32 bytes) for the DMA's block reads; a second data register, `dq_in2`, between
-the I/O cell's `dq_in` and the read lanes, for setup at 133.33 MHz (reads one clock longer). `dq_out` loads every clock through one mux on a registered select, and the command
+`dout0`..`dout0d`, 32 bytes) for the DMA's block reads; two more data registers, `dq_in2` and
+`dq_in3`, between the I/O cell's `dq_in` and the read lanes, for setup at 133.33 MHz (reads two
+clocks longer). `dq_out` loads every clock through one mux on a registered select, and the command
 (`cmd_nx`) is decoded a clock early, so the paths to the I/O cells carry no state decode. Hornet's interval, 335
 clocks a refresh alternating between the two chips (670 a chip), was set for KonamiGX's 96 MHz.
 

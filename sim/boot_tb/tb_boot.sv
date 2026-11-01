@@ -109,7 +109,7 @@ module tb_boot (
     logic [31:0]  x_addr, x_wdata, x_wdata_hi;
     logic [10:0]  x_burst;
     fb_board u (.*, .halt(x_halt), .frozen(x_frozen), .st_a(ld_we ? ld_a : st_a), .st_d,
-        .st_we(ld_we), .st_wd(ld_d), .ata_check(), .ata_key(),
+        .st_we(ld_we), .st_wd(ld_d), .ata_check(), .ata_key(), .aud_l(), .aud_r(), .nv_wr(),
         .c_req(b_c_req), .c_we(b_c_we), .c_addr(b_c_addr), .c_ack(c_ack && !x_own), .gd_crtc(), .gd_layer(), .gd_alpha(), .gd_x(), .gd_y(), .gd_w(), .gd_h(), .gd_base(), .gd_6c());
     assign c_req  = x_own ? x_c_req : b_c_req;
     assign c_we   = !x_own && b_c_we;

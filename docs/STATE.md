@@ -12,15 +12,16 @@ every frame.
 | flash x 3 | SDRAM 0x2000000 | 16 x 3M | 6 MB | in the NVRAM file; a state carries it too, the YMZ280B's samples live there |
 | BIOS | SDRAM 0x2800000 | 16 x 256K | 512 KB | skip: the `.mra` |
 | VRAM | DDR3 0x30000000 (`rtl/mister/hornet_ddr3.sv`) | 64 x 4M | 32 MB | yes, the frame buffers and display lists; size makes it the dump's largest part |
-| I-cache data, tags | `rtl/board/fb_cache.sv` (SB 9) `dmem`, `tmem` | 2 x 16 bytes x 8 x 512; 2 x 18 x 512 | 16 KB + 2.3 KB | yes, or flush: a dump taken with the caches written back and invalidated needs none of it |
-| D-cache data, tags | `fb_cache.sv` (SB 8) | 2 x 16 bytes x 8 x 256; 2 x 19 x 256 | 8 KB + 1.2 KB | yes (dirty lines), or written back before the dump |
+| I-cache data, tags | `rtl/board/fb_cache.sv` (SB 9) `dmem`, `tmem` | 2 x 16 bytes x 8 x 512; 2 x 19 x 512 | 16 KB + 2.3 KB | yes, or flush: a dump taken with the caches written back and invalidated needs none of it |
+| D-cache data, tags | `fb_cache.sv` (SB 8) | 2 x 16 bytes x 8 x 256; 2 x 20 x 256 | 8 KB + 1.2 KB | yes (dirty lines), or written back before the dump |
 | RTC registers and extended RAM | `rtl/board/fb_rtc65271.sv` `regs`, `xmem` | 8 x 64; 8 x 4096 | 4.1 KB | yes; the persistent part also in the NVRAM file (MAME's .nv format) |
 | DS1991 image | `rtl/board/fb_spu.sv` `dongle` | 8 x 256 | 256 | skip: the `.mra` |
 | SPU registers, receive queue | `fb_spu.sv` `regs`, `rq` | 8 x 9; 8 x 16 | 25 | yes |
 | DCR store | `rtl/board/fb_board.sv` `u_dcr` (MLAB) | 32 x 256 | 1 KB | yes |
 | GCU queue (VRAM words and commands, in order) | `rtl/board/fb_gcu.sv` `qm` | 130 x 32 | 520 | yes, or drained before the dump |
 | GCU row buffers | `fb_gcu.sv` `g_sb` (4 copies), `g_dbf`, `db_be` | 64 x 256 x 4; 16 x 128 x 4; 4 x 128 | 9 KB | skip: hold one command's row; a dump waits for the engine to be idle |
-| YMZ280B registers | `rtl/board/fb_ymz_shell.sv` `regs` | 8 x 256 | 256 | yes |
+| YMZ280B registers | `rtl/board/fb_ymz280b.sv` `regs` | 8 x 256 | 256 | yes |
+| CD audio ring | `rtl/board/fb_cd_slot.sv` `ring`, `tag` (x 2 drives) | 16 x 8192; 4 x 33 | 16 KB a drive | skip: refilled from the slot |
 | ATAPI drive buffers | `rtl/board/fb_atapi.sv` `b_e`, `b_o` (x 2 drives) | 8 x 2048 x 2 | 4 KB a drive | yes while a transfer is under way, else skip |
 | ATAPI packet and data-out bytes | `fb_atapi.sv` `cmd`, `dout` | 8 x 12; 8 x 64 | 76 a drive | yes |
 | disc TOC | `rtl/board/fb_cd_slot.sv` `t_lo`, `t_hi`, `t_fl`, `t_ct` | 48 x 128 | 768 a drive | skip: read from the slot again at mount |
@@ -31,7 +32,7 @@ every frame.
 
 | What | RTL | Bits | Save? | MAME `save_item` equivalent |
 |---|---|---|---|---|
-| cache valid, dirty, LRU | `fb_cache.sv` `v`, `dt`, `lru` | I 1,536, D 768 | with the cache contents | none (MAME has no cache) |
+| cache dirty, LRU | `fb_cache.sv` `dt`, `lru` (valid bits: in the tag RAMs, `tmem`'s top bit) | I 1,024, D 512 | with the cache contents | none (MAME has no cache) |
 | ATAPI task file, timers, sense, media change, play position | `fb_atapi.sv` (status ... a_smp) | ~400 a drive | yes | atahle/atapihle/t10mmc/cdda save_items |
 | SPU registers, timer counters | `fb_spu.sv` | ~120 | yes | ppccom `m_spu` |
 | flash modes, status, erase timers, the background erase | `rtl/board/fb_flash.sv` | ~180 | yes | intelfsh save_items |
@@ -51,7 +52,7 @@ the registers and lets the game replay; Tier 2 continues bit-exactly.
 |---|---|---|---|---|
 | PPC403GCX | `rtl/cpu/ppc403/ppc403_core.sv` | yes, `dbg_sel` / `dbg_wsel` 0-62 | 2 | GPRs, CR, LR, CTR, XER, MSR, PC, SRR0/1, SPRG0-3, EXIER, EVPR, TB, TCR, TSR, EXISR, IOCR, PIT (value, reload, count), the external line state, ICCR/DCCR/DCWR, SRR2/3, ESR, DEAR. Read 37 is the executing instruction's PC, write 37 the fetch address. MAME saves the same set (`ppccom.cpp:796-826`) plus its DCR array, which is `fb_board`'s `u_dcr`. The fetch queue, the multiply/divide steppers and `xstate` are not addressable: a dump is taken with the CPU halted at an instruction boundary, PC writable only then |
 | GCU (K057714) | `rtl/board/fb_gcu_shell.sv`, `rtl/board/fb_gcu.sv` | the shell's registers, both command FIFOs (4 words each), the engine's queue and origin | 1 | MAME's `save_pointer(m_vram)` is the DDR3 VRAM section; its remaining `save_item`s (`k057714.cpp:44-77`) are the shell's registers, the origin, plus the four frame descriptors, which the display adds. A dump waits for the engine to be idle (`gcu_idle`): MAME has no state inside a command. The display's line FIFO goes here when it lands |
-| YMZ280B | `rtl/board/fb_ymz_shell.sv` (registers only) | yes | 1 | MAME saves the register file and each voice's generator state (`ymz280b.cpp:565-600`, 24 fields a voice). Phase 4 keeps the voices in an addressable array so the save does not re-attack notes: `docs/HACKS.md` still carries the shell |
+| YMZ280B | `rtl/board/fb_ymz280b.sv` | registers only (`reg_a`) | 1 | The voices' state (`fnum` .. `cache_ok`, per voice) is in flops, not yet readable: MAME saves it (`ymz280b.cpp:565-600`, 24 fields a voice), and a restore without it re-attacks notes. Needs a read port over the voice arrays before savestates |
 | ATAPI drives (x 2) | `rtl/board/fb_atapi.sv` | yes | 2 | The task file, the packet, the response and buffer pointers, the timers, the sense and the play position; MAME's `t10mmc` / `atapihle` / `cdda` save lists are the checklist |
 | SDRAM controller, DDR3, scan-out, video timing | `rtl/mister/firebeat_sdram.sv`, `hornet_ddr3.sv`, `rtl/video/` | no | - | Stateless per request; the DDR3's in-flight reads (`rf`, `d_ts`, `d_bt`) carry no data a restore needs, and a dump is taken with the queues empty |
 
@@ -101,6 +102,8 @@ Register block (`fb_board` `st_a`/`st_d`):
 | 0x0400-0x04FF | `fb_ppc_dma` |
 | 0x0500-0x05FF | the DCR store (`u_dcr`) |
 | 0x0600-0x06FF | the YMZ280B shell's registers, read only |
+| 0x1000-0x17FF | the slave drive's access log (`fb_ata`), 1024 entries of two words, a ring from power-on: word 0 [31] write, [30] cs1, [29:27] register, [25:16] repeats - 1 (saturating), [15:0] data as `fb_ata` takes it (the bus halfword byte-swapped); word 1 the time in microseconds. An access equal to the one before counts a repeat |
+| 0x1800 | the number of log entries made since power-on |
 | 0x2000-0x3037 | the RTC's NVRAM image (MAME's .nv format), a byte a word |
 
 Each device's list is generated into its module by `scripts/st_lists.py` (`--check` in review):

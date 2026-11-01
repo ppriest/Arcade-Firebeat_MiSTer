@@ -74,7 +74,7 @@ module tb_sys (
     logic [15:0] sensor [4] = '{16'd0, 16'd0, 16'd0, 16'd0};
     logic [3:0]  cabinet_info = 4'd8;
 
-    firebeat_sys u (.reset(1'b0), .dump_start(1'b0), .dump_on_err(1'b0), .dump_busy(), .dump_held(), .*);
+    firebeat_sys u (.reset(1'b0), .dump_start(1'b0), .dump_on_err(1'b0), .dump_busy(), .dump_held(), .aud_l(), .aud_r(), .nv_wr(), .*);
     assign mon_v = u.u_board.mon_v, mon_we = u.u_board.mon_we, mon_addr = u.u_board.mon_addr;
     assign mon_mask = u.u_board.mon_mask, mon_data = u.u_board.mon_data;
     assign dcr_v = u.u_board.u_dma.dcr_we && u.u_board.u_dma.dcr_hit, dcr_a = u.u_board.u_dma.dcr_addr;

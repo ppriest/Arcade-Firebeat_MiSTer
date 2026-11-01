@@ -45,7 +45,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
-from mame_capture import NO_WINDOW, mame_paths, rompath  # noqa: E402
+from coretools import NO_WINDOW, mame_paths, rompath  # noqa: E402
 
 CHUNK = 8 << 20                      # bytes converted at a time, a multiple of 4
 
@@ -102,7 +102,7 @@ def main():
     cmd = [str(exe), a.game, "-nodebug", "-nowindow", "-video", "none", "-sound", "none",
            "-skip_gameinfo", "-nothrottle", "-autoboot_delay", "0",
            "-autoboot_script", str(REPO / "scripts" / "mame" / "run.lua"),
-           "-rompath", rompath(mame_dir), "-nvram_directory", str(out / "nvram"),
+           "-rompath", rompath(), "-nvram_directory", str(out / "nvram"),
            "-cfg_directory", str(out / "cfg")]
     p = subprocess.run(cmd, cwd=mame_dir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        timeout=a.timeout, **NO_WINDOW)

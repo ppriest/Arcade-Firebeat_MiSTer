@@ -1,0 +1,29 @@
+<misterromdescription>
+    <name>ParaParaParadise</name>
+    <setname>ppp</setname>
+    <rbf>Firebeat</rbf>
+    <mameversion>0289</mameversion>
+    <year>2000</year>
+    <manufacturer>Konami</manufacturer>
+    <category>Rhythm</category>
+    <rotation>horizontal</rotation>
+
+    <!-- rtl/firebeat_sys.sv's download: the BIOS (ROM_LOAD16_WORD_SWAP), then the dongle at
+         0x80000; written and checked by scripts/gen_mra.py. The discs go in the OSD's slots:
+         977jaa01.chd as the program CD, 977jaa02.chd as the audio CD. -->
+    <rom index="0" zip="ppp.zip" md5="none">
+        <interleave output="16">
+            <part name="977jaa03.21e" crc="7b83362a" map="12"/>
+        </interleave>
+        <part name="gq977" crc="1cf40267"/>
+    </rom>
+    <!-- the cabinet register's nibble (firebeat.cpp cabinet_r; Firebeat.sv): 08 Japan, 09 overseas -->
+    <rom index="1">
+        <part>08</part>
+    </rom>
+    <!-- the three flash chips (6 MB) and the RTC (MAME's .nv, 4,152 bytes): the installed game and its
+         settings (rtl/firebeat_sys.sv, ioctl index 4) -->
+    <nvram index="4" size="6295608"/>
+    <!-- Firebeat.sv's J1 line: joystick bit 4 + i is name i -->
+    <buttons names="Sensor 1,Sensor 2,Sensor 3,Sensor 4,Sensor 5,Start,Coin,Test,Service,Pause" count="1"/>
+</misterromdescription>

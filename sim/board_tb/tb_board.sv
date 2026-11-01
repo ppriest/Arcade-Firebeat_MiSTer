@@ -93,7 +93,7 @@ module tb_board (
     logic [31:0] vm_addr, vm_wdata, vm_wdata_hi, vm_rdata, vm_rdata_hi;
     logic [10:0] vm_burst;
     logic [3:0]  vm_be, vm_be_hi;
-    fb_board u (.*, .halt(1'b0), .frozen(), .st_a(14'd0), .st_d(), .st_we(1'b0), .st_wd(32'd0), .ata_check(), .ata_key(), .gd_crtc(), .gd_layer(), .gd_alpha(), .gd_x(), .gd_y(), .gd_w(), .gd_h(), .gd_base(), .gd_6c());
+    fb_board u (.*, .halt(1'b0), .frozen(), .st_a(14'd0), .st_d(), .st_we(1'b0), .st_wd(32'd0), .ata_check(), .ata_key(), .aud_l(), .aud_r(), .nv_wr(), .gd_crtc(), .gd_layer(), .gd_alpha(), .gd_x(), .gd_y(), .gd_w(), .gd_h(), .gd_base(), .gd_6c());
     // master 1 idle: hornet_ddr3 needs two
     logic [1:0] d_waitn, d_rvalid;
     hornet_ddr3 #(.N(2), .WIDE(2'b11), .PRI(0)) u_ddr3 (

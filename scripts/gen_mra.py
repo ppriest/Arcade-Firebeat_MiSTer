@@ -7,19 +7,18 @@
 The index-0 image is rtl/firebeat_sys.sv's download: the BIOS (512 KB, ROM_LOAD16_WORD_SWAP, so
 each halfword's bytes swapped) and the DS1991 dongle image at 0x80000. The script builds that
 image from the .mra with scripts/mra.py (mra-tools-c's semantics) and compares it byte for byte
-with the files read directly; it writes nothing if they differ. <mameversion> comes from MAME_EXE.
+with the files read directly; it writes nothing if they differ. <mameversion> comes from the configured MAME (coretools.mame_version).
 The NVRAM file (index 4) is the three flash chips and the RTC in MAME's .nv format (4,152 bytes).
 
-Every set goes to releases/_dev until the core runs a game.
+Parents go to releases/, MAME's clones to releases/_alternatives/_ParaParaParadise/.
 """
-import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
-from mame_capture import load_env  # noqa: E402
+from coretools import mame_version, rompath  # noqa: E402
 import mra  # noqa: E402
 
 BIOS = ("977jaa03.21e", "7b83362a")
@@ -29,7 +28,12 @@ SETS = {
     "ppp": dict(desc="ParaParaParadise", file="ParaParaParadise",
                 dongle=("gq977", "1cf40267"), cds=("977jaa01", "977jaa02")),
     "ppd": dict(desc="ParaParaDancing", file="ParaParaDancing",
-                dongle=("gq977-ko", "b275de3c"), cds=("977kaa01", "977kaa02")),
+                dongle=("gq977-ko", "b275de3c"), cds=("977kaa01", "977kaa02"),
+                cabinet=9),
+    # a clone: its dongle is in the parent's merged zip
+    "ppp1mp": dict(desc="ParaParaParadise 1st Mix Plus", file="ParaParaParadise 1st Mix Plus",
+                   zip="ppp", dongle=("ppp1mp/gqa11-ja", "207a99b2"), cds=("a11jaa01", "a11jaa02"),
+                   alt="_ParaParaParadise"),
 }
 NVRAM_SIZE = 0x600000 + 4152
 
@@ -50,9 +54,10 @@ def read_crc(z, crc):
 
 
 def write(setname, s, romdirs, mamever):
-    zp = find_zip(romdirs, setname)
+    zname = s.get("zip", setname)
+    zp = find_zip(romdirs, zname)
     if zp is None:
-        print(f"{setname}: no {setname}.zip in the ROM path, skipped")
+        print(f"{setname}: no {zname}.zip in the ROM path, skipped")
         return
     with zipfile.ZipFile(zp) as z:
         bios = read_crc(z, BIOS[1])
@@ -71,18 +76,24 @@ def write(setname, s, romdirs, mamever):
     <!-- rtl/firebeat_sys.sv's download: the BIOS (ROM_LOAD16_WORD_SWAP), then the dongle at
          0x80000; written and checked by scripts/gen_mra.py. The discs go in the OSD's slots:
          {s['cds'][0]}.chd as the program CD, {s['cds'][1]}.chd as the audio CD. -->
-    <rom index="0" zip="{setname}.zip" md5="none">
+    <rom index="0" zip="{zname}.zip" md5="none">
         <interleave output="16">
             <part name="{BIOS[0]}" crc="{BIOS[1]}" map="12"/>
         </interleave>
         <part name="{s['dongle'][0]}" crc="{s['dongle'][1]}"/>
     </rom>
+    <!-- the cabinet register's nibble (firebeat.cpp cabinet_r; Firebeat.sv): 08 Japan, 09 overseas -->
+    <rom index="1">
+        <part>{s.get('cabinet', 8):02X}</part>
+    </rom>
     <!-- the three flash chips (6 MB) and the RTC (MAME's .nv, 4,152 bytes): the installed game and its
          settings (rtl/firebeat_sys.sv, ioctl index 4) -->
     <nvram index="4" size="{NVRAM_SIZE}"/>
+    <!-- Firebeat.sv's J1 line: joystick bit 4 + i is name i -->
+    <buttons names="Sensor 1,Sensor 2,Sensor 3,Sensor 4,Sensor 5,Start,Coin,Test,Service,Pause" count="1"/>
 </misterromdescription>
 """
-    out = REPO / "releases" / "_dev" / f"{s['file']}.mra"
+    out = REPO / "releases" / ("_alternatives/" + s["alt"] if "alt" in s else "") / f"{s['file']}.mra"
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
     tmp.write_text(text)
@@ -97,11 +108,10 @@ def write(setname, s, romdirs, mamever):
 
 
 def main():
-    env = load_env()
-    romdirs = env["MAME_ROMPATH"].split(";")
-    exe = Path(env["MAME_DIR"]) / env.get("MAME_EXE", "mame.exe")
-    ver = subprocess.run([str(exe), "-version"], capture_output=True, text=True).stdout.split()[0]
-    mamever = "0" + ver.split(".")[1]
+    romdirs = rompath().split(";")
+    mamever = mame_version()
+    if not mamever:
+        sys.exit("MAME does not answer: check MAME_DIR/MAME_EXE")
     for name in sys.argv[1:] or list(SETS):
         write(name, SETS[name], romdirs, mamever)
 

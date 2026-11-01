@@ -24,7 +24,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
-from mame_capture import NO_WINDOW, mame_paths, rompath  # noqa: E402
+from coretools import NO_WINDOW, mame_paths, rompath  # noqa: E402
 
 
 def main():
@@ -49,7 +49,7 @@ def main():
                CORE_SCRIPT=str(REPO / "scripts" / "mame" / "ppcwin.lua"))
     cmd = [str(exe), a.game, "-debug", "-debugger", "none", "-nowindow", "-video", "none",
            "-sound", "none", "-skip_gameinfo", "-nothrottle", "-autoboot_delay", "0",
-           "-autoboot_script", str(REPO / "scripts" / "mame" / "run.lua"), "-rompath", rompath(mame_dir),
+           "-autoboot_script", str(REPO / "scripts" / "mame" / "run.lua"), "-rompath", rompath(),
            "-nvram_directory", str(out / "nvram"), "-cfg_directory", str(out / "cfg")]
     p = subprocess.Popen(cmd, cwd=mame_dir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          **NO_WINDOW)

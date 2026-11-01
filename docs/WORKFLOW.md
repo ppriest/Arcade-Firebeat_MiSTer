@@ -96,9 +96,8 @@ Two properties that must survive any port:
 - **A stale marker whose pid is gone is cleared automatically.** A crashed tool must not wedge every
   later build.
 
-Every entry point that touches either side calls it: `build_staged.py`, `run_sim.sh`,
-`read_issp.py`, `memdump.py`, `tracer_readout.py`, and anything else that opens the Blaster.
-`deploy.py` does not and should not — it is scp over the network.
+Every entry point that touches either side calls it: the mister MCP's build and `probe_*` tools,
+`run_sim.sh`, `run_verilator.sh`. Deploying does not: it is a network copy.
 
 ## 2a. Sharing the PC and the MiSTer with other sessions
 
@@ -120,8 +119,8 @@ sessions on different cores stepping on each other.
   board, takes it away from whoever is using it: do it only when the user asks, and say so.
 - **Ask before taking the board back**, and before killing another session's simulator: a stray
   `vsim`/`vsimk` may still be in use. Ask its owner; do not assume it is abandoned.
-- **Read probes only through `scripts/read_issp.py`** (or `probe.py`), never a bare `quartus_stp`
-  call: the bare call does not take the marker and silently defeats the lock.
+- **Read probes only through the mister MCP's `probe_*` tools**, never a bare `quartus_stp` call
+  or a script of our own: those do not take the MCP's lock.
 - **Commit only the paths you changed** in any repository another session may also be working
   in, the skill's included: `git add <paths>`, never `git add -A` or `commit -a`, which sweep a
   peer's uncommitted work into your commit. Check `git status` first; leave anything that is not
@@ -187,7 +186,8 @@ Rules that come with the pattern:
 ## 5. The JTAG probe
 
 `rtl/debug/issp_probe.sv` — In-System Sources and Probes, read and poked over JTAG with
-`quartus_stp -t scripts/read_issp.tcl`, under the section 2 lock.
+the mister MCP's `probe_*` tools, with this core's field tables in `scripts/issp_fields.tcl`
+(registered with `core_register`).
 
 **Why ISSP and not SignalTap:** SignalTap acquisition is GUI-only in Quartus Prime Lite 17.0. ISSP
 is scriptable (`start_insystem_source_probe`, `read_probe_data`, `write_source_data`), which is
@@ -205,8 +205,7 @@ read every source back after writing it.
 
 **Every probe reading is labelled with what produced it: `<core>|<build>|<set>|`.** Several
 sessions share one MiSTer, so the core that answers a JTAG read is whatever is loaded, not
-necessarily the repository that asked. `read_issp.py` and `probe.py` prefix every line from
-`scripts/identity.py`: the core file and set come from the device (`/tmp/RBFNAME`,
+necessarily the repository that asked. The MCP's probe tools prefix every line: the core file and set come from the device (`/tmp/RBFNAME`,
 `/tmp/CORENAME`), the commit from a machine-wide deploy log that `deploy.py` appends to
 (`%LOCALAPPDATA%/mister_deployed.tsv`). A field that cannot be established prints `?`, and when
 the loaded core is not this repository's, a warning goes to stderr. Quote readings with their
@@ -471,7 +470,7 @@ each **done** as it lands.
 | `extract_romstart.py` | `ROM_START` straight from the driver | skill |
 | `build_rom_image.py`, `build_region.py` | the ROM image the benches load | GX, Seta |
 | `cfg.py` | read-modify-write of the per-core `.CFG` status word | Seta, Fuuki |
-| `read_issp.tcl`, `read_issp.py`, `probe.py` | read the probe / write the source bus over JTAG | skill |
+| `issp_fields.tcl` | the probe field tables the MCP's `probe_*` tools decode with | skill |
 | `report_worst_paths.tcl`, `sta_*.tcl` | worst setup paths from the compiled database | skill |
 | `floorplan.py`, `floorplan.tcl` | PNG of placement on the die coloured by block, per-group resource table | skill |
 | `check_release_mras.py`, `hooks/pre-push` | refuses a push of published .mra files whose core is unreleased or whose layout changed without a new .rbf; also `.github/workflows/check-mras.yml` | skill |

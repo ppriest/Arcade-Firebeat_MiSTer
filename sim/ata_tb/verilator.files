@@ -1,0 +1,4 @@
+rtl/board/fb_atapi.sv
+rtl/board/fb_cd_slot.sv
+rtl/board/fb_ata.sv
+sim/ata_tb/tb_ata.sv

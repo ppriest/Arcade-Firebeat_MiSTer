@@ -63,6 +63,8 @@ module fb_atapi #(
 
     output logic        play_on,
     output logic [31:0] play_lba,
+    output logic [9:0]  play_smp,       // the sample of play_lba being played
+    output logic        play_tick,      // 44.1 kHz while playing: play_lba/play_smp are the new sample
     output logic [7:0]  vol0, vol1,
     output logic        check,          // [Firebeat] a command ended in CHECK CONDITION, sense key check_key
     output logic [3:0]  check_key,
@@ -491,6 +493,8 @@ logic [7:0]  ntoc;
 assign skey = e_skey;
 assign play_on = a_play && !a_pause;
 assign play_lba = a_lba;
+assign play_smp = a_smp;
+assign play_tick = tick44 && play_on;
 
 typedef enum logic [3:0] {
     G_IDLE, G_PLAY0, G_PLAY1, G_PLAY2, G_BYTE, G_SUBTRK, G_SUB2, G_MSF, G_WOUT, G_XDONE, G_LEAD

@@ -20,7 +20,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
-from mame_capture import NO_WINDOW, mame_paths, rompath  # noqa: E402
+from coretools import NO_WINDOW, mame_paths, rompath  # noqa: E402
 
 
 def main():
@@ -45,7 +45,7 @@ def main():
                CORE_SCRIPT=str(REPO / "scripts" / "mame" / "boottap.lua"))
     cmd = [str(exe), a.game, "-nodebug", "-nowindow", "-video", "none", "-sound", "none", "-skip_gameinfo",
            "-nothrottle", "-autoboot_delay", "0", "-autoboot_script", str(REPO / "scripts" / "mame" / "run.lua"),
-           "-rompath", rompath(mame_dir), "-nvram_directory", str(out / "nvram"), "-cfg_directory", str(out / "cfg")]
+           "-rompath", rompath(), "-nvram_directory", str(out / "nvram"), "-cfg_directory", str(out / "cfg")]
     r = subprocess.run(cmd, cwd=mame_dir, env=env, capture_output=True, text=True, timeout=a.timeout, **NO_WINDOW)
     (out / "mame_log.txt").write_text(r.stdout + r.stderr)
     if (out / "lua_error.txt").exists():

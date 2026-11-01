@@ -96,7 +96,7 @@ Phase 0's results, each with its section in HARDWARE_NOTES:
   board. One memory map (`firebeat_ppp_map`, F:1652-1660), one screen.
 - **Out of this scope:** Pop'n Music and Beatmania III (a second processor board with an RF5C400
   and 32 MB of wave RAM, a DVD or HDD); Keyboardmania (two GCUs on two screens, an MU100-class
-  synth). Pop'n Music is the next family when the user scopes it.
+  synth). Pop'n Music is next: Phase 8, scoped by the user.
 - **First target `ppp11`**, the only set of the family with both CDs and the dongle dumped good,
   and the one Phase 0 measured. Then `ppp`, `ppp1mp`, and `ppd` (the Korean cabinet's sensor bars
   6-8, F:2062-2082, `init_ppp_overseas`).
@@ -139,8 +139,8 @@ left to the family that uses it.
 The gate's proposal and its measurements are in git history and in HARDWARE_NOTES (sections in
 the Progress table). Its tools stay in use: `scripts/mame/ppp_load.lua` and
 `scripts/ppp_load_report.py` (workload), `scripts/mame_ppc_window.py` and `sim/ppc_tb` (CPU windows
-replayed against MAME), `scripts/mame/ymz_capture.lua` (YMZ280B reference), `rtl/cdtest` and
-`scripts/cdtest.py` (the CD path), `scripts/main_mister/` (`MiSTer_Firebeat` build and its host
+replayed against MAME), `scripts/mame/ymz_capture.lua` (YMZ280B reference), `rtl/cdtest` (the CD path, read with
+the MCP's `probe_sequence`), `scripts/main_mister/` (`MiSTer_Firebeat` build and its host
 check).
 
 ## Phases 1-7 (proposed)
@@ -250,6 +250,37 @@ Each phase ends with a commit, a bench fed from MAME, and its exit check run.
   the Downloader database.
 - The Main_MiSTer change's route out (see "Open decisions").
 
+## Phase 8 — Pop'n Music (approved)
+
+The `firebeat_popn` sets (F:2760-2772): the PPC board as built, one program CD on the main ATA bus,
+and the SPU board (F:1183-1231, F:1519-1539):
+
+| SPU part | MAME | Plan |
+|---|---|---|
+| 68000 at 16 MHz, 512 KB program ROM, 256 KB RAM | `spu_map` F:1211-1226 | fx68k, vendored with `PROVENANCE.md`; ROM in SDRAM, RAM in block RAM (HARDWARE_NOTES, "Pop'n SPU in MAME") |
+| CY7C131 dual-port RAM, 1 KB, IRQs at 0x3FE/0x3FF | F:1193-1195, PPC at 0x74000000 | block RAM, two ports |
+| RF5C400, 32 voices, 16.9344 MHz | `rf5c400.cpp` | written from MAME's model (no RTL in the reuse map); bench from a MAME capture, as the YMZ280B's |
+| wave RAM 32 MB, banked into the 68000 at 0x800000 (4M words a bank) | F:1228-1231, 1333-1346 | SDRAM: Pop'n needs a 128 MB module |
+| SPU ATA bus, DVD-ROM, DMA into wave RAM | F:1525-1529 | `fb_atapi` on a second bus, 2048-byte sectors; the CHD service extended for DVD CHDs |
+| 500 Hz SPU timer | F:1531-1534, a value MAME chose by ear | `docs/MAME_KLUDGES.md` |
+| inputs: 9 buttons, coin, test, service | `popn` ports F:2173-2198 | the J1 line rebuilt per family |
+
+Shape: a separate revision, `Firebeat_popn`, chosen by the `.mra`'s `<rbf>`. It leaves out the
+YMZ280B, the second CD drive and CD audio, and the sensor bars (~6,400 ALMs at `0202c3d`:
+`fb_ymz280b` 1,824, the second `fb_atapi` and `fb_cd_slot` ~4,600) and adds the SPU.
+
+Steps, each with its bench before hardware:
+
+1. MAME captures for popn4: PPC-side boot trace, the 68000's trace, the dual-port RAM traffic, the
+   SPU ATA commands, RF5C400 register writes and output. Area and memory budgets from them.
+2. The revision and the SPU skeleton: fx68k, its ROM and RAM, dual-port RAM, IRQs; the 68000's
+   trace against MAME's.
+3. The SPU ATA bus and the DVD slot; the wave RAM load against MAME's.
+4. RF5C400; output against MAME's.
+5. On the board: popn4 to its attract mode, then the other sets.
+
+Sets: popn4 first (`gq986jaa01`, `gq986jaa02` on hand), then popn5-8, popnanm, popnanm2, popnmt.
+
 ## Memory plan (decided)
 
 | What | Size | Where | Traffic (Phase 0) |
@@ -310,6 +341,10 @@ the CPU (HARDWARE_NOTES, "Memory plan inputs"). An SDRAM module of 64 MB or more
   GCU's VRAM in DDR3 during play (user, after item 5).
 - **YMZ280B written from MAME's model** (user, after item 4).
 - **Phases 1-7 approved as written** (user, after Phase 0).
+- **Pop'n Music next, as its own revision** (user, at the Phase 8 proposal): the 68000 as fx68k
+  in the FPGA, the wave RAM in SDRAM, so Pop'n needs a 128 MB SDRAM module. ppp1mp added on the
+  current revision.
+- **Phase 8 approved as written** (user).
 - **Board state dump for the benches** (user, for E202): from the OSD's hidden page, by hand or on
   a drive's first CHECK CONDITION. The board freezes (CPU at an instruction boundary, GCU, DMA and
   slots idle, D-cache written back), copies work RAM and flash to DDR3 0x34000000 with every
@@ -318,6 +353,10 @@ the CPU (HARDWARE_NOTES, "Memory plan inputs"). An SDRAM module of 64 MB or more
   only.
 - **The installed flash (6 MB) and RTC NVRAM (4 KB) persist as the core's NVRAM files** through
   hps_io, so the Test-mode install runs once per set (user, with the phase approval).
+- **No default NVRAM in the `.mra`** (user): the sound flash is copied from the disc by SOUND
+  FLASH INIT and MAME's sets carry no NVRAM, so only the RTC's 4 KB could be embedded and the
+  install would still be needed. The README documents the Test-mode install; the save on OSD
+  open (`e8840bb`) keeps it to once per set.
 
 ## Standing rules
 

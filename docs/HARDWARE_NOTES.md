@@ -690,9 +690,11 @@ needs a buffer covering the worst first-word latency seen with both slots busy, 
 two 16 KB request buffers. Measured with the test core at 20 MHz; the HPS side sets the rate.
 
 **CHDs, through a Main_MiSTer change.** Branch `firebeat-chd` of Main_MiSTer (worktree
-`E:/Main_MiSTer-firebeat`, commit `cd603ed` on upstream `8328d9f`): `support/firebeat` serves a
+`E:/Main_MiSTer-firebeat`, commits `6e1b948`, `eee2495` on upstream `8328d9f`): `support/firebeat` serves a
 CD CHD mounted in a slot of a core named `Firebeat*` as the raw image `chdman extractcd` writes
-(every track's 2352-byte frames back to back, CD audio byte-swapped into .bin order), through
+(every track's 2352-byte frames back to back, CD audio byte-swapped into .bin order; a
+MODE1/2048 track, as ppp1mp's `a11jaa01`, gets each frame's sync and header rebuilt and zero
+EDC/ECC, since `fb_cd_slot` reads only bytes 16-2063), through
 the same mount and read hooks the Sun support uses (`user_io.cpp`). Built in WSL with ARM GCC
 10.2 (`scripts/main_mister/build_main.sh`); on the MiSTer as `/media/fat/MiSTer_Firebeat`, chosen
 for these cores only by a `[Firebeat*]` / `main=MiSTer_Firebeat` section in `MiSTer.ini` (the
@@ -704,6 +706,14 @@ previous file kept as `MiSTer.ini.before-firebeat`); loading FirebeatCD runs tha
   of each .bin (160 and 208 bytes) is not reached by whole-block reads.
 - On the board, CHDs mounted from the OSD (`Firebeat_30000002.rbf`, slots offering CHD): the
   slots report the .bin sizes, the program disc's first 4 KB sum to `00153D43` as from the .bin.
+- That binary (md5 `34d614dd…`) predates the TOC block, so `fb_cd_slot` fell back to one data
+  track. The audio drive's READ TOC gave tracks 1-1 and lead-out 0x40624, which is the .bin's size
+  over 2048 (slave access log, `debug/dumps/30000010_e202b.bin.ata.txt`, entries 38-46). The game
+  then refused every "play cd N/1 track" before touching the drive and raised **E202 ATAPI SLAVE
+  ERROR** after Start (the "CDDA error" path, e.g. 0x80021754 on 0x80056710's -1).
+  Rebuilt from the current `firebeat.cpp` (md5 `f873ae5d…`): the host check serves `FBTC` with 34
+  tracks (track 2 at frame 6691, the .cue's 01:29:16). Installed with the MCP's
+  `mister_install_main`; ppp11 then passed Start with no E202 (user, `Firebeat_30000010.rbf`).
 
 | Slots reading | Mode | Raw image, MB/s a slot | CHD, MB/s a slot | CHD first word, avg | CHD first word, max |
 |---|---|---|---|---|---|
@@ -848,6 +858,12 @@ registers, 143 M10Ks, 49 DSPs.
 | `81ebc34` (disc slots survive a reset) | 2, 3, 4, 5 | +0.445, -0.234, +0.271, +0.022 | -0.607, -0.719, -1.109, -0.366 | every SDRAM failure `sdram` state/mode/active -> 3 LUTs -> ~4.9 ns route -> `dq_out`'s I/O cell (seed 4 also HDMI -0.221) |
 | `16748b6` (`dq_out` through one mux) | 2-6 | -1.171 to +0.481 | -0.432 to -0.077 | now `state` -> 3 LUTs -> ~4 ns route -> `SDRAM_nWE`/`nCAS` |
 | `6052243` (command decoded a clock early) | 2 | +0.481 | +0.025 | setup met on every clock (HDMI +0.538); 32,334 ALMs (77%). **Hold -0.418** at the SDRAM clock, one path: `firebeat_sdram` `m_addr2[15]` (`clk_sys`) -> `sdram` `a[15]`, 0.53 ns of data against 0.77 ns of skew. `m_addr2` changes only with `m_req2` and while port 2 is idle, and `a` loads `addr2` only on `ack2 != req2`, so the edge that might catch the change does not load it. Deployed with `--force` as `Firebeat_30000008.rbf` |
+| `5c88cbb` (state dump) | 2, 3 | +0.130 (seed 3) | +0.483 (seed 3) | seed 2 misses the SDRAM clock by 0.193 ns on one route, `sdram` `dq_in[8]` -> `dq_in2[8]` (the DQ8 I/O cell); seed 3 meets setup on every clock (HDMI +0.504). **Hold -0.614** at the SDRAM clock, one path: `firebeat_sdram` `m_addr1[20]` -> `sdram` `a[20]`, the same case as `m_addr2` above: `m_addr1` changes only in the clock `m_req1` toggles, `req1` meets hold, and `a` loads `addr1` only on `ack1 != req1`. Deployed with `--allow-timing-miss` as `Firebeat_30000009.rbf` |
+| `b13d252` (sensors, YMZ280B, CD audio) | 7 | -0.045 | -0.091 | HDMI -0.086; 38,198 ALMs (91%). Worst `clk_sys`: `fb_cache:u_ic\|ra[4]` -> the valid bits' 512-way register mux -> `nh0` -> GPR read -> `o_v[0][*]` |
+| `0202c3d` (valid bits in the tag RAMs) | 7 | +0.075 | -0.069 | HDMI +0.208; 36,891 ALMs (88%). boot_tb's 6,000 frames: the five divergences of `debug/ppp11-boot/rtl_run_bc6f934.log` at the same entries, 15,486,566 accesses compared |
+| | 2 | +0.423 | +0.026 | **met on every clock** (HDMI +0.166); 36,763 ALMs (88%). Deployed as `Firebeat_30000011.rbf` |
+| `862bb2a` (NVRAM autosave, D-pad Left/Right, cabinet byte) | 2, 3, 4, 5 | +0.250, -0.284, +0.670, +0.250 | -0.118, +0.198, -0.263, -0.610 | none meets; HDMI -0.027 to -0.215 at seeds 3-5; hold -0.318 (SDRAM, seed 2), -0.606 (`clk_sys`, seed 3). Worst SDRAM path at seed 5 `sdram` `dq_in[11]` -> `dq_in2[11]` (DQ11's I/O cell to `dq_in2`, placed by its 256-bit fan-out); `clk_sys` at seed 3 inside `fb_ymz280b` (`cur` -> `vol_l`) |
+| `a928331` (`dq_in3`, reads one SDRAM clock longer) | 2 | +0.499 | +0.617 | **met on every clock** (HDMI +0.269); 36,769 ALMs (88%). sdram_tb 20,000 random operations 0 errors, sys_tb passes. Deployed as `Firebeat_30000013.rbf` |
 
 Logs `debug/build_d8f1_s{1,3,4,5}.log`, `debug/build_0bb8_s5.log`, `debug/build_81eb_s{2,3,4,5}.log`,
 `debug/build_1674_s{2..6}.log`, `debug/build_6052_s2.log`; `build/BUILT_COMMIT` names `6052243` at seed 2.
@@ -884,6 +900,31 @@ Two things this run settled about the probe route:
   the address cone that has almost no margin to spare. The instrumented revision needs its probe
   fields registered next to the ISSP instance (a snapshot), not a seed, before its numbers mean
   anything; Phase 1's probe build closed because the design was smaller.
+
+## Pop'n SPU in MAME: popn4 (Phase 8 step 1)
+
+`scripts/mame/popn_spu.lua` to frame 9,000 (attract demo playing), summarised by
+`scripts/popn_spu_stats.py`; output in `debug/popn4-spu/` (gitignored), with `out.wav`
+(153.5 s at 48 kHz).
+
+| What | Count over 9,000 frames | First frame |
+|---|---|---|
+| 68000 writes to the dual-port RAM | 671,991 (a block at 280600-28060F every frame) | 0 |
+| 68000 reads of it | 27,359 | 2928 |
+| PPC reads / writes of it | 393,572 / 6,565 (busiest frame 2,572) | 2928 |
+| IRQ acks | 293,008 | 0 |
+| SPU ATA commands | 610: A0 (PACKET) x600, E2 x5, E3 x2, E5 x2, EF x1 | 1093 |
+| DMA address writes | 512 (high word 0-15) | 3820 |
+| wave-bank writes | 1,036 (banks 0-3, all four) | 363 |
+| RF5C400 accesses | 524,606, 3,615/s, six of them reads | 3.36 s |
+
+Wave RAM at frame 9,000: 360 of 512 64 KB blocks non-zero, the highest at 0x1FB0000, so the
+attract load already spans the full 32 MB.
+
+Block RAM at `0202c3d`: 184 of 553 M10Ks, 1.17 of 5.66 Mbit; 369 blocks (4.49 Mbit) free. The
+68000's 256 KB RAM (2 Mbit) fits there; its 512 KB ROM does not fit beside it and goes to SDRAM.
+
+Not captured yet: the 68000's instruction trace (step 2's bench) and the PPC-side boot trace.
 
 ## Feasibility
 

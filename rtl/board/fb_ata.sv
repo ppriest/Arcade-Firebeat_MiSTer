@@ -34,12 +34,15 @@ module fb_ata (
 
     output logic [1:0]  play_on,
     output logic [31:0] play_lba [2],
+    output logic signed [15:0] cd_l, cd_r,   // CD audio, both drives', at MAME's speaker gain
     output logic [1:0]  check,          // [Firebeat] a drive's CHECK CONDITION (fb_atapi check), the state dump's trigger
     output logic [3:0]  check_key [2],
     input  logic [7:0]  st_a,           // [Firebeat] the drives' register blocks (fb_atapi), drive st_a[7]
     output logic [31:0] st_d,
     input  logic        st_we,
     input  logic [31:0] st_wd,
+    input  logic [11:0] lg_a,           // [Firebeat] the slave's access log: word lg_a[10:0], or the count
+    output logic [31:0] lg_d,           // a clock after lg_a
     output logic        bad
 );
 
@@ -73,6 +76,10 @@ logic [1:0]  toc_audio, rq_half;
 logic [3:0]  toc_ctl [2];
 logic [9:0]  bw_a [2];
 logic [15:0] bw_d [2];
+logic [9:0]  play_smp [2];
+logic [1:0]  play_tick;
+logic [7:0]  vol0 [2], vol1 [2];
+logic signed [15:0] dl [2], dr [2];
 
 logic [31:0] st_dd [2];
 assign st_d = st_dd[st_a[7]];
@@ -88,7 +95,8 @@ generate for (d = 0; d < 2; d++) begin : g_drv
         .toc_start(toc_start[d]), .toc_audio(toc_audio[d]), .toc_ctl(toc_ctl[d]),
         .rq(rq[d]), .rq_lba(rq_lba[d]), .rq_half(rq_half[d]), .rq_done(rq_done[d]),
         .bw_we(bw_we[d]), .bw_a(bw_a[d]), .bw_d(bw_d[d]),
-        .play_on(play_on[d]), .play_lba(play_lba[d]), .vol0(), .vol1(),
+        .play_on(play_on[d]), .play_lba(play_lba[d]), .play_smp(play_smp[d]), .play_tick(play_tick[d]),
+        .vol0(vol0[d]), .vol1(vol1[d]),
         .check(check[d]), .check_key(check_key[d]),
         .st_a(st_a[6:0]), .st_d(st_dd[d]), .st_we(st_we && st_a[7] == d[0]), .st_wd,
         .bad(bad_d[d])
@@ -101,9 +109,67 @@ generate for (d = 0; d < 2; d++) begin : g_drv
         .have_disc(have[d]), .disc_new(dnew[d]), .ntrk(ntrk[d]), .toc_a(toc_a[d]),
         .toc_start(toc_start[d]), .toc_audio(toc_audio[d]), .toc_ctl(toc_ctl[d]),
         .rq(rq[d]), .rq_lba(rq_lba[d]), .rq_done(rq_done[d]),
-        .bw_we(bw_we[d]), .bw_a(bw_a[d]), .bw_d(bw_d[d])
+        .bw_we(bw_we[d]), .bw_a(bw_a[d]), .bw_d(bw_d[d]),
+        .play_on(play_on[d]), .play_lba(play_lba[d]), .play_smp(play_smp[d]), .play_tick(play_tick[d]),
+        .vol0(vol0[d]), .vol1(vol1[d]), .cd_l(dl[d]), .cd_r(dr[d])
     );
 end endgenerate
+
+function automatic logic signed [15:0] sat_add(input logic signed [15:0] a, b);
+    logic signed [16:0] x;
+    x = 17'(a) + 17'(b);
+    return (x > 17'sd32767) ? 16'sd32767 : (x < -17'sd32768) ? -16'sd32768 : x[15:0];
+endfunction
+always_ff @(posedge clk) begin
+    cd_l <= sat_add(dl[0], dl[1]);
+    cd_r <= sat_add(dr[0], dr[1]);
+end
+
+// [Firebeat] The slave drive's access log, for the state dump (docs/STATE.md): every access while
+// the slave is selected, and every write to the device register. An access equal to the one before
+// (direction, block, register, data) counts a repeat instead of taking an entry, so a status poll
+// stays one entry. 1024 entries, a ring; lg_n counts every entry made. Word 0: [31] write,
+// [30] cs1, [29:27] register, [25:16] repeats (saturating), [15:0] data. Word 1: the first access's
+// time in microseconds.
+logic        sel_dev;                   // the device register's DEV bit, as the drives latch it
+logic [31:0] us_t, lg_n;
+logic [31:0] lg_w0 [1024], lg_w1 [1024];
+logic [31:0] lg_last;
+logic        lg_we, lg_new;
+logic [9:0]  lg_wa;
+logic [31:0] lg_q0, lg_q1;
+wire         lg_hit = acc_q && (sel_dev || (we && !cs1 && off == 3'd6));
+wire  [15:0] lg_data = we ? wdata : (resp[0] ? rd[0] : resp[1] ? rd[1] : 16'hFFFF);
+wire  [31:0] lg_ent = {we, cs1, off, 11'd0, lg_data};
+always_ff @(posedge clk) begin
+    if (tick_us) us_t <= us_t + 32'd1;
+    if (acc && we && !cs1 && off == 3'd6) sel_dev <= wdata[4];
+    lg_we <= 1'b0;
+    if (lg_hit) begin
+        lg_we <= 1'b1;
+        if (lg_n != 32'd0 && {lg_last[31:26], lg_last[15:0]} == {lg_ent[31:26], lg_ent[15:0]}) begin
+            lg_new <= 1'b0;
+            if (lg_last[25:16] != 10'h3FF) lg_last[25:16] <= lg_last[25:16] + 10'd1;
+        end else begin
+            lg_new <= 1'b1;
+            lg_last <= lg_ent;
+            lg_wa <= lg_n[9:0];
+            lg_n <= lg_n + 32'd1;
+        end
+    end
+    if (por) begin us_t <= '0; lg_n <= '0; sel_dev <= 1'b0; lg_we <= 1'b0; end
+end
+always_ff @(posedge clk) begin
+    if (lg_we) begin
+        lg_w0[lg_wa] <= lg_last;
+        if (lg_new) lg_w1[lg_wa] <= us_t;
+    end
+    lg_q0 <= lg_w0[lg_a[10:1]];
+    lg_q1 <= lg_w1[lg_a[10:1]];
+end
+logic [11:0] lg_a_q;
+always_ff @(posedge clk) lg_a_q <= lg_a;
+assign lg_d = lg_a_q[11] ? lg_n : lg_a_q[0] ? lg_q1 : lg_q0;
 
 assign irq = irq_o[0] || irq_o[1];
 assign bad = bad_d[0] || bad_d[1];

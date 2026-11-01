@@ -13,7 +13,7 @@ rtl/board/fb_pc16552.sv
 rtl/board/fb_spu.sv
 rtl/board/fb_rtc65271.sv
 rtl/board/fb_flash.sv
-rtl/board/fb_ymz_shell.sv
+rtl/board/fb_ymz280b.sv
 rtl/board/fb_gcu.sv
 rtl/board/fb_gcu_shell.sv
 rtl/board/fb_atapi.sv

@@ -13,7 +13,7 @@
 //   0x7D000200-0x7D00021F  cabinet: offset 0 cabinet_info << 28, else 0
 //   0x7D000320-0x7D000327  lamps (dropped); 0x7D000804 lamps
 //   0x7D000340-0x7D00035F  sensors, halfwords 0-3: SENSORn | 0x0100, else 0
-//   0x7D000400-0x7D000401  YMZ280B (fb_ymz_shell), bytes
+//   0x7D000400-0x7D000401  YMZ280B (fb_ymz280b), bytes
 //   0x7D000500-0x7D000501  control_w, bytes
 //   0x7D000800-0x7D000803  IN0-IN3, bytes
 //   0x7D400000, 0x7D800000, 0x7DA00000  the three flash chips (fb_flash), bytes
@@ -102,7 +102,9 @@ module fb_board (
     input  logic [7:0]   in0, in1, in2, in3,
     input  logic [15:0]  sensor [4],
     input  logic [3:0]   cabinet_info,
+    output logic signed [15:0] aud_l, aud_r,   // the speaker: YMZ280B and CD audio (firebeat.cpp's routes)
     output logic [7:0]   control,
+    output logic         nv_wr,          // a CPU write reached the flash or the RTC: the NVRAM file is stale
 
     // loading and the NVRAM file
     input  logic         dg_we,          // the dongle image
@@ -186,6 +188,7 @@ assign frozen = halted && dc_flushed && !dma_busy && gcu_idle;
 // drives, 0x0200 the SPU, 0x0280 the RTC's counters, 0x0300 the flash, 0x0340 the PC16552D,
 // 0x0380 the GCU shell, 0x0400 the DMA, 0x0500 the DCR store, 0x0600 the YMZ280B's registers (read
 // only), 0x2000 the RTC's NVRAM image a byte a word (its .nv format, 4,152 bytes)
+logic [31:0] st_ata_log;
 logic [31:0] st_ata, st_spu, st_rtc, st_fl, st_uart, st_gcu, st_dma;
 logic [7:0]  st_ymz;
 wire  st_hold = halted || st_we;        // the RAMs' read ports follow st_a
@@ -202,6 +205,7 @@ always_ff @(posedge clk)
     14'b00_0100_????_????: st_d <= st_dma;
     14'b00_0101_????_????: st_d <= dcr_q;
     14'b00_0110_????_????: st_d <= {24'd0, st_ymz};
+    14'b01_????_????_????: st_d <= st_ata_log;       // the slave's access log, then its count at 0x1800
     14'b1?_????_????_????: st_d <= {24'd0, rtc_nv_rdata};
     default:               st_d <= 32'd0;
     endcase
@@ -463,6 +467,7 @@ always_ff @(posedge clk) begin
     if (reset) begin wg_v <= 1'b0; bw_ack <= 1'b0; end
 end
 assign fw_ack = w_ack && w_f;
+assign nv_wr  = (rtc_req && r_we) || (fw_req && fw_we && fw_ack);
 
 // ---------------------------------------------------------------- devices
 fb_pc16552 u_uart (
@@ -500,10 +505,12 @@ fb_flash u_flash (
     .st_a(st_a[5:0]), .st_d(st_fl), .st_we(st_we && st_a[13:6] == 8'h0C), .st_wd
 );
 
-fb_ymz_shell u_ymz (
+logic signed [15:0] ymz_l, ymz_r, cd_l, cd_r;
+fb_ymz280b u_ymz (
     .clk, .reset,
     .req(ymz_req), .we(r_we), .a0(l_addr[0]), .wdata(l_wd), .ack(ymz_ack), .rdata(ymz_q),
     .y_req, .y_addr, .y_ack, .y_rdata,
+    .out_l(ymz_l), .out_r(ymz_r), .tick(),
     .reg_q(st_ymz), .reg_a(st_a[7:0])
 );
 
@@ -529,10 +536,22 @@ fb_ata u_ata (
     .req(ata_req), .we(r_we), .cs1(r_dev == D_ATA1), .off({r_addr[3:2], r_lane[1]}), .wdata(ata_wd),
     .ack(ata_ack), .rdata(ata_q), .irq(ata_irq),
     .img_mounted, .img_size, .sd_lba, .sd_blk_cnt, .sd_rd, .sd_ack, .sd_buff_wr, .sd_buff_dout,
-    .play_on(), .play_lba(), .check(ata_check), .check_key(ata_key),
-    .st_a(st_a[7:0]), .st_d(st_ata), .st_we(st_we && st_a[13:8] == 6'd1), .st_wd, .bad(ata_bad)
+    .play_on(), .play_lba(), .cd_l, .cd_r, .check(ata_check), .check_key(ata_key),
+    .st_a(st_a[7:0]), .st_d(st_ata), .st_we(st_we && st_a[13:8] == 6'd1), .st_wd,
+    .lg_a(st_a[11:0]), .lg_d(st_ata_log), .bad(ata_bad)
 );
 
 assign bad = dma_bad || spu_bad || flash_bad || ata_bad;
+
+// the speaker: YMZ280B outputs 1 and 0 to its left and right (firebeat.cpp:770-771), CD audio straight
+function automatic logic signed [15:0] mix(input logic signed [15:0] a, b);
+    logic signed [16:0] x;
+    x = 17'(a) + 17'(b);
+    return (x > 17'sd32767) ? 16'sd32767 : (x < -17'sd32768) ? -16'sd32768 : x[15:0];
+endfunction
+always_ff @(posedge clk) begin
+    aud_l <= mix(ymz_r, cd_l);
+    aud_r <= mix(ymz_l, cd_r);
+end
 
 endmodule

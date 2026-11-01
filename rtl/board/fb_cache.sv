@@ -20,8 +20,9 @@
 // (byte address + 4k) in bits 32k+31:32k, big-endian words. Word port: an uncached access.
 //
 // Storage: data in four word lanes per way, each a RAM with a registered read address (so a whole
-// line is read or written in a clock), tags likewise; valid, dirty and LRU bits in registers so
-// that reset and set invalidation are immediate. The last data and tag writes are forwarded to the
+// line is read or written in a clock), tags likewise, each with its valid bit (a lookup reads it from
+// the RAM rather than through a 2^SB-way mux of registers, which limited clk_sys); dirty and LRU bits
+// in registers. Reset clears the valid bits in C_CLR, one set a clock (2^SB clocks), holding requests. The last data and tag writes are forwarded to the
 // lookup that reads them in the same clock, where a cache needs it (FWD): a store hit writes its
 // lane in the clock it answers, and the next request can be taken in that same clock, so a lookup
 // of that set then reads the RAM during the write. In the instruction cache FWD is 0: it never
@@ -71,23 +72,25 @@ localparam int NS = 1 << SB;
 localparam int TW = 27 - SB;            // tag: addr[30:SB+4]
 
 typedef enum logic [3:0] {
-    C_IDLE, C_LOOK, C_WB, C_FILL, C_UNC, C_DONE, C_MLOOK, C_MWB, C_MDONE
+    C_IDLE, C_LOOK, C_WB, C_FILL, C_UNC, C_DONE, C_MLOOK, C_MWB, C_MDONE, C_CLR
 } c_t;
 c_t c;
 
 // ---------------------------------------------------------------- storage
 logic [SB-1:0]  ra;                     // the read address (set), a register
 logic [SB-1:0]  ra_n;
-logic [TW-1:0]  tq [2];
+logic [TW:0]    tq [2];                 // {valid, tag}
 logic [127:0]   dq [2];
-logic [NS-1:0]  v [2], dt [2];
+logic [NS-1:0]  dt [2];
+logic [SB-1:0]  clr;                    // C_CLR's set
 logic [NS-1:0]  lru;                    // the way to replace next
 
 // writes, decided combinationally by the state machine
 logic           tw_en;
-logic           tw_way;
+logic [1:0]     tw_wm;                  // the ways written, one bit each
 logic [SB-1:0]  tw_set;
 logic [TW-1:0]  tw_tag;
+logic           tw_v;
 logic [1:0]     dw_way;                 // one-hot
 logic [SB-1:0]  dw_set;
 logic [15:0]    dw_be;                  // per byte of the line, lane 0 in [3:0]
@@ -96,8 +99,8 @@ logic [127:0]   dw_data;
 // a RAM per byte of the line: Quartus 17 builds a byte-enabled array written in a loop as registers
 genvar gw, gb;
 generate for (gw = 0; gw < 2; gw++) begin : g_way
-    logic [TW-1:0] tmem [NS];
-    always_ff @(posedge clk) if (tw_en && tw_way == gw) tmem[tw_set] <= tw_tag;
+    logic [TW:0] tmem [NS];
+    always_ff @(posedge clk) if (tw_en && tw_wm[gw]) tmem[tw_set] <= {tw_v, tw_tag};
     assign tq[gw] = tmem[ra];
     for (gb = 0; gb < 16; gb++) begin : g_byte
         logic [7:0] dmem [NS];
@@ -110,10 +113,12 @@ always_ff @(posedge clk) ra <= ra_n;
 
 // the last writes, forwarded to a lookup of the same set (FWD)
 logic [TW-1:0]  tag_r [2];
+logic [1:0]     v_r;                    // the ways' valid bits
 logic [127:0]   line_r [2];
 generate
 if (FWD) begin : g_fwd
-    logic           ft_v, ft_way;
+    logic           ft_ok, ft_tv;
+    logic [1:0]     ft_wm;
     logic [SB-1:0]  ft_set;
     logic [TW-1:0]  ft_tag;
     logic [1:0]     fd_way;
@@ -121,20 +126,22 @@ if (FWD) begin : g_fwd
     logic [15:0]    fd_be;
     logic [127:0]   fd_data;
     always_ff @(posedge clk) begin
-        if (tw_en) begin ft_v <= 1'b1; ft_way <= tw_way; ft_set <= tw_set; ft_tag <= tw_tag; end
+        if (tw_en) begin ft_ok <= 1'b1; ft_wm <= tw_wm; ft_set <= tw_set; ft_tag <= tw_tag; ft_tv <= tw_v; end
         if (dw_way != 2'b00) begin fd_way <= dw_way; fd_set <= dw_set; fd_be <= dw_be; fd_data <= dw_data; end
-        if (reset) begin ft_v <= 1'b0; fd_way <= 2'b00; end
+        if (reset) begin ft_ok <= 1'b0; fd_way <= 2'b00; end
     end
 
     always_comb for (int w = 0; w < 2; w++) begin
-        tag_r[w] = (ft_v && ft_way == w && ft_set == ra) ? ft_tag : tq[w];
+        tag_r[w] = (ft_ok && ft_wm[w] && ft_set == ra) ? ft_tag : tq[w][TW-1:0];
+        v_r[w]   = (ft_ok && ft_wm[w] && ft_set == ra) ? ft_tv : tq[w][TW];
         line_r[w] = dq[w];
         if (fd_way[w] && fd_set == ra)
             for (int b = 0; b < 16; b++) if (fd_be[b]) line_r[w][8*b +: 8] = fd_data[8*b +: 8];
     end
 end else begin : g_nofwd
     always_comb for (int w = 0; w < 2; w++) begin
-        tag_r[w]  = tq[w];
+        tag_r[w]  = tq[w][TW-1:0];
+        v_r[w]    = tq[w][TW];
         line_r[w] = dq[w];
     end
 end
@@ -150,12 +157,12 @@ wire  [SB-1:0]  r_set = r_addr[SB+3:4];
 wire  [TW-1:0]  r_tag = r_addr[30:SB+4];
 wire  [1:0]     r_lane = r_addr[3:2];
 
-wire  [1:0]     hit_w = {v[1][ra] && tag_r[1] == r_tag, v[0][ra] && tag_r[0] == r_tag};
+wire  [1:0]     hit_w = {v_r[1] && tag_r[1] == r_tag, v_r[0] && tag_r[0] == r_tag};
 wire            hit = hit_w != 2'b00;
 wire            hway = hit_w[1];
 wire  [127:0]   hline = line_r[hway];
 // the way a fill replaces: an invalid one first
-wire            vway = !v[0][ra] ? 1'b0 : !v[1][ra] ? 1'b1 : lru[ra];
+wire            vway = !v_r[0] ? 1'b0 : !v_r[1] ? 1'b1 : lru[ra];
 
 function automatic logic [15:0] lane_be(input logic [1:0] lane, input logic [3:0] b);
     // be[3] is the word's byte 0 (bits 31:24): the line's byte 4*lane + 3 in little-endian bit order
@@ -209,7 +216,7 @@ always_comb begin
     if (take) ra_n = in_addr[SB+3:4];
     else if (m_take) ra_n = m_addr[SB+3:4];
 
-    tw_en = 1'b0; tw_way = 1'b0; tw_set = r_set; tw_tag = r_tag;
+    tw_en = 1'b0; tw_wm = 2'b00; tw_set = r_set; tw_tag = r_tag; tw_v = 1'b0;
     dw_way = 2'b00; dw_set = r_set; dw_be = '0; dw_data = {4{r_wdata}};
     case (c)
     C_LOOK:
@@ -219,12 +226,23 @@ always_comb begin
         end
     C_FILL:
         if (l_ack) begin
-            tw_en = 1'b1; tw_way = fill_way;
+            tw_en = 1'b1; tw_wm = fill_way ? 2'b10 : 2'b01; tw_v = 1'b1;
             dw_way = fill_way ? 2'b10 : 2'b01; dw_be = '1; dw_data = l_rdata;
             if (r_we)                   // the store that missed, over the line
                 for (int b = 0; b < 4; b++)
                     if (r_be[3 - b]) dw_data[32*r_lane + 8*(3 - b) +: 8] = r_wdata[8*(3 - b) +: 8];
         end
+    // the invalidations, as the tags' writes
+    C_MLOOK:
+        case (r_op)
+        3'd4: begin tw_en = 1'b1; tw_wm = 2'b11; end
+        3'd3: begin tw_en = hit; tw_wm = hit_w; end
+        3'd1: begin tw_en = hit && !dt[hway][ra]; tw_wm = hit_w; end
+        default: ;
+        endcase
+    C_MWB:
+        if (l_ack && r_op == 3'd1) begin tw_en = 1'b1; tw_wm = fill_way ? 2'b10 : 2'b01; end
+    C_CLR: begin tw_en = 1'b1; tw_wm = 2'b11; tw_set = clr; end
     default: ;
     endcase
 end
@@ -245,12 +263,11 @@ always_ff @(posedge clk) begin
             fill_way <= vway;
             wb_line <= line_r[vway];
             wb_addr <= {tag_r[vway], r_set};
-            c <= (v[vway][ra] && dt[vway][ra]) ? C_WB : C_FILL;
+            c <= (v_r[vway] && dt[vway][ra]) ? C_WB : C_FILL;
         end
     C_WB: if (l_ack) c <= C_FILL;
     C_FILL:
         if (l_ack) begin
-            v[fill_way][r_set] <= 1'b1;
             dt[fill_way][r_set] <= r_we;
             lru[r_set] <= !fill_way;
             rd_hold <= l_rdata[32*r_lane +: 32];
@@ -261,29 +278,25 @@ always_ff @(posedge clk) begin
     C_DONE: if (ce) c <= C_IDLE;
     C_MLOOK: begin
         case (r_op)
-        3'd4: begin v[0][ra] <= 1'b0; v[1][ra] <= 1'b0; c <= C_MDONE; end
-        3'd3: begin if (hit) v[hway][ra] <= 1'b0; c <= C_MDONE; end
+        3'd3, 3'd4: c <= C_MDONE;
         3'd5, 3'd6:                     // r_op[1]: 5 way 0, 6 way 1
-            if (v[r_op[1]][ra] && dt[r_op[1]][ra]) begin
+            if (v_r[r_op[1]] && dt[r_op[1]][ra]) begin
                 wb_line <= line_r[r_op[1]]; wb_addr <= {tag_r[r_op[1]], ra}; fill_way <= r_op[1];
                 c <= C_MWB;
             end else c <= C_MDONE;
         default:                        // 1 flush, 2 store
             if (hit && dt[hway][ra]) begin
                 wb_line <= hline; wb_addr <= r_addr[30:4]; fill_way <= hway; c <= C_MWB;
-            end else begin
-                if (hit && r_op == 3'd1) v[hway][ra] <= 1'b0;
-                c <= C_MDONE;
-            end
+            end else c <= C_MDONE;
         endcase
     end
     C_MWB:
         if (l_ack) begin
             dt[fill_way][r_set] <= 1'b0;
-            if (r_op == 3'd1) v[fill_way][r_set] <= 1'b0;
             c <= C_MDONE;
         end
     C_MDONE: if (ce) c <= C_IDLE;
+    C_CLR: begin clr <= clr + 1'd1; if (&clr) c <= C_IDLE; end
     default: c <= C_IDLE;
     endcase
 
@@ -301,8 +314,8 @@ always_ff @(posedge clk) begin
     end
 
     if (reset) begin
-        c <= C_IDLE; p_v <= 1'b0;
-        v[0] <= '0; v[1] <= '0; dt[0] <= '0; dt[1] <= '0; lru <= '0;
+        c <= C_CLR; clr <= '0; p_v <= 1'b0;
+        dt[0] <= '0; dt[1] <= '0; lru <= '0;
     end
 end
 
