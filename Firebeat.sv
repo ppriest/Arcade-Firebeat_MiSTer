@@ -49,6 +49,8 @@ localparam CONF_STR = {
 	"-;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"-;",
+	"O[66],Autosave,On,Off;",
+	"-;",
 	"H0P1,Debug;",
 	"P1T[64],Dump state / release;",
 	"P1O[65],Dump on slave error,Off,On;",
@@ -217,15 +219,15 @@ firebeat_sys sys (
 );
 
 // the NVRAM file's save: Main uploads it on the next OSD open after this rises (menu.cpp
-// MENU_SAVE_CHECK); dirty from the board's first flash or RTC write after the last upload. The stp
-// revision's probe F can also request one.
+// MENU_SAVE_CHECK); dirty from the board's first flash or RTC write after the last upload, held back
+// while Autosave is off. The stp revision's probe F can also request one.
 reg  nv_dirty = 1'b0, nv_up_q = 1'b0;
 always @(posedge clk_sys) begin
 	nv_up_q <= ioctl_upload;
 	if (ioctl_upload && !nv_up_q) nv_dirty <= 1'b0;
 	else if (nv_wr) nv_dirty <= 1'b1;
 end
-assign nvram_save = nv_dirty | issp_src[5];
+assign nvram_save = (nv_dirty && !status[66]) | issp_src[5];
 
 ///////////////////////   VIDEO   ////////////////////////////////
 
@@ -248,13 +250,20 @@ assign LED_USER = ioctl_download | ioctl_upload | dump_busy | dump_held;
 // Sources: [0] clear the frame counter, [1] start a read-back pass (probe M), [2] its range
 // (0 BIOS, 1 flash), [3] rewrite the test picture, [4] inverted, [5] request the NVRAM save,
 // [6] hold the board in reset (needed for a read-back pass), [7] show the test picture instead
-// of the GCU's display.
+// of the GCU's display. cabinet, idx1_wr (index-1 writes) and dl_idx (the last download's index)
+// check the .mra's mod byte.
 reg  [15:0] frames;
 reg         vs_q;
 always @(posedge clk_sys) begin
 	vs_q <= vid_vs;
 	if (vid_vs && !vs_q && frames != 16'hFFFF) frames <= frames + 1'd1;
 	if (issp_src[0]) frames <= 16'd0;
+end
+reg  [7:0]  idx1_wr = 8'd0;
+reg  [3:0]  dl_idx = 4'd0;
+always @(posedge clk_sys) begin
+	if (ioctl_download) dl_idx <= ioctl_index[3:0];
+	if (ioctl_download && ioctl_wr && ioctl_index == 16'd1 && idx1_wr != 8'hFF) idx1_wr <= idx1_wr + 1'd1;
 end
 reg  [2:0]  vs50;
 reg  [23:0] cnt50, frame_50m;
@@ -265,7 +274,8 @@ always @(posedge CLK_50M) begin
 end
 issp_probe #(.INSTANCE_ID("F"), .PROBE_W(92), .SOURCE_W(8)) u_probe_f (
 	.clk(clk_sys),
-	.probe({pll_locked, pat_done, chk_busy, ioctl_download, scan_late, dl_kb, frame_50m, frames}),
+	.probe({dl_idx, idx1_wr, cabinet, pll_locked, pat_done, chk_busy, ioctl_download, scan_late, dl_kb,
+	        frame_50m, frames}),
 	.source(issp_src)
 );
 // probe M: the last read-back pass, and the board: its CPU's PC, a model's unsupported mode

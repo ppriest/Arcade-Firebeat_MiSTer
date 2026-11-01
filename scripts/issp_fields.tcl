@@ -10,6 +10,9 @@ set fields_F {
     {chk_busy        73  73 bit}
     {pat_done        74  74 bit}
     {pll_locked      75  75 bit}
+    {cabinet         76  79 hex}
+    {idx1_wr         80  87 dec}
+    {dl_idx          88  91 dec}
 }
 
 set fields_M {
