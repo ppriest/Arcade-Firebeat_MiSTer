@@ -28,6 +28,11 @@ published and are skipped):
      slots -- the push
      must also add a new releases/*NAME_*.rbf. Names, comments, zip names,
      descriptions, DIP labels and defaults do not count.
+  3. THE CORE MAIN LOADS. Main's get_rbf (support/arcade/mra_loader.cpp) takes
+     <rbf>NAME</rbf> as any Arcade-NAME or NAME followed by '_' or '.', and
+     loads the greatest name: <rbf>Firebeat</rbf> loaded
+     Arcade-Firebeat_popn_*.rbf. Of the released bitstreams, the one it would
+     pick must be NAME's own.
 
 An .mra new to the published tree passes check 2 (a new game or alternative on a
 released core), but must still pass check 1. Bypassing with `git push
@@ -142,6 +147,21 @@ def released(files):
     return names
 
 
+def main_pick(name, files):
+    """The released bitstream Main's get_rbf would load for <rbf>name</rbf>, or None."""
+    best = None
+    for f in files:
+        if not RBF.match(f):
+            continue
+        b = f.split("/")[-1]
+        for stem in ("Arcade-" + name, name):
+            n = len(stem)
+            if b[:n].lower() == stem.lower() and b[n:n + 1] in ("_", "."):
+                if best is None or b > best[0]:
+                    best = (b, f)
+    return best[1] if best else None
+
+
 def check(base, head):
     head_files = tree_files(head)
     base_files = set(tree_files(base))
@@ -164,6 +184,12 @@ def check(base, head):
             problems.append(f"{path}: <rbf>{name}</rbf> has no released bitstream "
                             f"(releases/Arcade-{name}_YYYYMMDD.rbf) in this push. Release the core "
                             f"with it, or keep the .mra in releases/_dev/ until then.")
+            continue
+        pick = main_pick(name, head_files)
+        if pick and RBF.match(pick).group(1) != name:
+            problems.append(f"{path}: Main would load {pick} for <rbf>{name}</rbf> (the greatest "
+                            f"Arcade-{name}_* name). Rename a core so that no released name is "
+                            f"another followed by '_'.")
             continue
         if path not in base_files:
             continue

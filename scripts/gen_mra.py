@@ -144,7 +144,7 @@ def write(setname, s, romdirs, mamever):
     text = f"""<misterromdescription>
     <name>{name}</name>
     <setname>{setname}</setname>
-    <rbf>{"Firebeat_popn" if popn else "Firebeat"}</rbf>
+    <rbf>{"Firebeat_popn" if popn else "Firebeat_ppp"}</rbf>
     <mameversion>{mamever}</mameversion>
     <year>{s.get('year', 2000)}</year>
     <manufacturer>Konami</manufacturer>

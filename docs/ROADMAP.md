@@ -306,6 +306,99 @@ Sets: popn4 first (`gq986jaa01`, `gq986jaa02` on hand), then popn5-8, popnanm, p
 | popnmt | `976jaa01` | `976jaa02` | untested; rental cabinet (nibble 6, init_popn_rental) |
 | popnmt2 | `976jba01` | `976jaa02` | untested; clone of popnmt; rental cabinet |
 
+## Phase 9 — Keyboardmania (approved)
+
+The `firebeat_kbm` sets (F:1805-1880): the ParaParaParadise board (PPC, YMZ280B and its flash,
+RTC, two CD-ROM drives with CD audio) plus:
+
+| Part | MAME | Plan |
+|---|---|---|
+| second K057714, `gcu_sub` at `7E800100-7E8001FF` | F:1834-1840, 1875 | a second `fb_gcu_shell` + `fb_gcu_disp`, its own VRAM in DDR3 |
+| two screens, both ROT270: 640 x 480 at 25.175 MHz in the BIOS, then 512 x 384 at 16.6666 MHz, 58.32 Hz, in the game (HARDWARE_NOTES, "Keyboardmania in MAME") | F:1821-1832, 2755-2758 | the GCU's existing modes; OSD: left, right, or both side by side (decision A) |
+| PC16552D `duart_midi`, 24 MHz, top byte lane, `offset>>6` | F:1852-1864, 1876 | a second `fb_pc16552`; IRQ1 through the extend-board enable bits 0 and 1 (F:1903, 1914) |
+| two MIDI keyboards, 24 keys, 31250 baud, chan1 left, chan0 right | F:1855-1864, `midikbd.cpp` | note-on/off bytes generated into each RX from the MiSTer inputs (24 keys a player from the keyboard and pad buttons) |
+| modulation wheels at `70008000` (0 = P1, 8 = P2) | F:1877, 1882-1891 | paddle or analogue axis |
+| lamps at `7D000804` | F:1999 | written and ignored, as ppp's |
+| XT446 synth: H8S/2655 16 MHz, SWP30, 24 MB wave ROM, fed from chan1's TX | F:1866-1869, `xt446.cpp` | OSD: chan1's TX to an MT32-pi on the user port, or the XT446 ported from MAME (decision B) |
+| inputs: Start P1/P2, Test, Service, Coin | `kbm` F:2096-2110 | the J1 line rebuilt per family |
+
+Shape: a separate revision, `Firebeat_kbm`, chosen by the `.mra`'s `<rbf>`, one `.rbf` per family
+(Decisions taken). No SPU, no sensor bars.
+
+Budgets, from the fit reports in `build/output_files/`:
+
+| | ALMs | Source |
+|---|---|---|
+| `Firebeat` revision (ppp) | 36,769 (88%) | `Firebeat.fit.rpt` |
+| second GCU: shell + engine 2,627, display 823 | ~3,450 | `Firebeat.fit.rpt`, `Firebeat_popn.fit.rpt` |
+| second PC16552 87, key generator and wheels | ~300, estimated | `Firebeat_popn.fit.rpt` (`u_uart`) |
+| sum | ~40,500 of 41,910 (97%) | |
+
+That does not fit with timing closed (Firebeat_popn at 90% was seed-sensitive). Ways back, each to
+be measured by a build: one drawing engine time-shared by both GCUs (two register files and
+display contexts, one `fb_gcu`, ~1,900 back); leaving out what kbm does not use (the network
+UART, ppp's sensor path). For a shared engine, both GCUs' work a frame together is at most
+about 1.4 M source and 1.4 M destination pixels in attract, 0.5 M each in play (HARDWARE_NOTES);
+whether `fb_gcu`'s rate covers that inside a frame is checked in step 3.
+
+VRAM traffic, measured (HARDWARE_NOTES, "Keyboardmania in MAME"): both GCUs together 252 MB/s
+median and 310 MB/s worst in play, 500 MB/s in the worst attract frame, against ppp's 236 MB/s,
+on one DDR3 port at clk_sys (533 MB/s at 64 bits a clock, before overheads). VRAM is 64 MB, each
+GCU reading to the top of its 32 MB. The port's sustained rate is measured on the board before
+step 3; if it falls short of 500 MB/s, the worst attract frames finish late (MAME draws every
+command at once, so this is work, not timing).
+
+Steps, each with its bench before hardware:
+
+1. MAME captures for kbm: PPC boot trace, both GCUs' register and FIFO traffic, VRAM traffic per
+   frame per GCU, the MIDI UART traffic both ways, YMZ280B writes. The area and bandwidth numbers
+   above replaced by measured ones; the plan revised before step 2. Done except the area (a build,
+   step 2): HARDWARE_NOTES, "Keyboardmania in MAME"; the install (BACKUP CLEAR) and the screen
+   mode found on the way.
+2. The revision: second UART, key generator, wheels, inputs; the PPC trace against MAME's to the
+   point where the second GCU is first used.
+3. The second GCU and the screen output (decisions A, C); each screen's frame against MAME's
+   `lscreen` and `rscreen`.
+4. MIDI out to the MT32-pi; its byte stream against MAME's chan1 TX capture, then by ear on the board.
+5. On the board: kbm to its attract mode, then kbm2nd, kbm3rd, kbh.
+6. The XT446 in the core: the H8S/2655 against a MAME trace of the firmware from reset; the SWP30
+   against MAME's output for a captured MIDI stream; then the area build, and the OSD choice.
+
+Sets: all `firebeat_kbm`, BIOS `974a03.21e`; CHDs for every set on hand
+(`F:/Emulation/roms/MAME CHDs/kbm`, `kbm2nd`, `kbm3rd`; kbh's in `kbm`).
+
+| Set | Program CD | Audio CD | Init | Status |
+|-|-|-|-|-|
+| kbm | `gq974-ja c01` | `gq974-ja a02` | `init_kbm_jp` | |
+| kbh | `gu974-ka a01` | `gu974-ka a02` | `init_kbm_overseas` | clone of kbm |
+| kbm2nd | `a01 ja a01` | `a01 ja a02` | `init_kbm_jp` | |
+| kbm3rd | `a12jaa01` | `a12jaa02` | `init_kbm_jp` | |
+
+Decisions (user):
+
+- **A. Two screens on one output (decided, user).** An OSD option: left screen, right screen, or
+  both side by side once rotated. Both is stacked in the raster (512 x 768 in the game), so that the
+  rotation puts them side by side (two 3:4 portraits, 3:2 overall; the driver's two screens are
+  the evidence for the aspect), at twice the line rate. One screen is 3:4.
+- **B. The XT446 (decided, user): an OSD choice of two paths.**
+  - **MT32-pi.** chan1's TX, the bytes MAME sends to `xt446 midi_w` (F:1866), goes out of the user
+    port as 31250-baud MIDI to an MT32-pi, on the pin the MiSTer cores with MT32-pi support use
+    (read from one of them before wiring). Its SoundFont approximates an MU100-class XG instrument
+    (`docs/HACKS.md`). Step 1's MIDI capture shows what the game sends (program changes, bank
+    selects, XG SysEx). The user port is free: this revision has no SNAC controller.
+  - **XT446 in the core**, ported from MAME: the H8S/2655 (`h8s2655.cpp` on MAME's H8 core) running
+    the 2 MB firmware `xu50710-m27c160.bin`, and the SWP30 (`swp30.cpp`, 4,158 lines: AWM2
+    voices and the MEG effects DSP) on 24 MB of wave ROM (`xt446.cpp` ROM list). No RTL exists for
+    either. Wave ROM and firmware (26 MB) go in SDRAM, so this path needs a 128 MB module. Area is
+    the blocking unknown: the revision is at ~97% before it (Budgets), so the XT446 either fits
+    after the reclaim, or is a second build of the revision with it in place of something else;
+    measured by a build before it is promised. MAME flags every kbm set `MACHINE_IMPERFECT_SOUND`
+    (F:2755-2758), so its output is the reference with that caveat.
+- **C. Clocks (decided, user): no separate clock.** The game runs 512 x 384 in the 16.6666 MHz
+  mode, as ppp (step 1); only the BIOS screens are 640 x 480 at 25.175 MHz. clk_sys 66.667 MHz
+  stays the video clock: one screen clk_sys/4, both side by side (512 x 768, twice the line rate)
+  clk_sys/2. The BIOS screens run at clk_sys/4 as ppp's do (`docs/HACKS.md`, the 31 kHz entry).
+
 ## Memory plan (decided)
 
 | What | Size | Where | Traffic (Phase 0) |
@@ -370,6 +463,11 @@ the CPU (HARDWARE_NOTES, "Memory plan inputs"). An SDRAM module of 64 MB or more
   in the FPGA, the wave RAM in SDRAM, so Pop'n needs a 128 MB SDRAM module. ppp1mp added on the
   current revision.
 - **Phase 8 approved as written** (user).
+- **One .rbf per game family** (user): `Firebeat` (ParaParaParadise), `Firebeat_popn`, and a
+  revision each for Beatmania III and Keyboardmania, each with only its family's boards.
+  ParaParaParadise is released as `Firebeat_ppp` (user): Main takes `<rbf>X</rbf>` as any
+  `Arcade-X_*.rbf`, the greatest name winning, so `<rbf>Firebeat</rbf>` loaded
+  `Arcade-Firebeat_popn_*.rbf`. No released name may be another followed by `_`.
 - **Board state dump for the benches** (user, for E202): from the OSD's hidden page, by hand or on
   a drive's first CHECK CONDITION. The board freezes (CPU at an instruction boundary, GCU, DMA and
   slots idle, D-cache written back), copies work RAM and flash to DDR3 0x34000000 with every

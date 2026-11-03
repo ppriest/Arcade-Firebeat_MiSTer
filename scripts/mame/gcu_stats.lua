@@ -1,6 +1,6 @@
 -- Per-frame GCU workload from the firebeat-meas MAME (k057714 counters, outputs <tag>:statNN,
 -- latched at vblank). Writes one CSV row per frame to GCU_STATS_FILE; with GCU_SNAP_EVERY = N,
--- saves a snapshot every N frames to the snap directory. GCU_TAGS lists the GCUs ("gcu" or
+-- saves every screen every N frames to the snap directory as <screen>_<frame>.png. GCU_TAGS lists the GCUs ("gcu" or
 -- "gcu,gcu_sub"). GCU_PRESS holds timed presses, "frame:port:field:frames;..." (field by
 -- name, as ports.lua prints it: "120:IN0:Service Mode:10").
 local names = { "imm_cmds", "dl_calls", "dl_entries", "dl_depth_max", "obj_cmds", "obj_src_px",
@@ -17,7 +17,6 @@ for _, t in ipairs(tags) do
 	items[t] = {}
 	for i = 0, #names - 1 do items[t][i] = dev:output(string.format("stat%02d", i)) end
 end
-local screen = manager.machine.screens:at(1)
 local f = assert(io.open(file, "w"))
 local hdr = { "frame" }
 for _, t in ipairs(tags) do
@@ -46,7 +45,11 @@ emu.register_frame_done(function()
 		end
 	end
 	f:write(table.concat(row, ",") .. "\n")
-	if snap_every > 0 and frame % snap_every == 0 then screen:snapshot() end
+	if snap_every > 0 and frame % snap_every == 0 then
+		for tag, scr in pairs(manager.machine.screens) do
+			scr:snapshot(string.format("%s_%06d.png", tag:gsub("^:", ""), frame))
+		end
+	end
 end)
 
 emu.add_machine_stop_notifier(function() f:close() end)

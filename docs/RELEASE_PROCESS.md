@@ -39,7 +39,10 @@ Steps for a release:
    SDRAM layout and the ROM-load path are both encoded in the MRAs, so a mismatched pair fails in
    ways that look like core bugs. Parents at the top level, clones in `releases/_alternatives/`.
    The `.rbf` is `Arcade-<Name>_YYYYMMDD.rbf`; `releases/*.rbf` is gitignored, so add it with
-   `git add -f` deliberately, and only a build verified to run the games.
+   `git add -f` deliberately, and only a build verified to run the games. Names here: the
+   `Firebeat` revision is released as `Firebeat_ppp`, the others under their revision's name. No
+   `<Name>` may be another followed by `_`: Main's `get_rbf` (`support/arcade/mra_loader.cpp`)
+   takes `<rbf>X</rbf>` as any `Arcade-X_*.rbf` and loads the greatest name.
 6. Record the commit **and the fitter seed** from `build/BUILT_COMMIT` in the release notes, with
    the worst slack per clock and the resource table. A commit alone does not identify a bitstream:
    two builds of one commit at different seeds have differed in which games ran.

@@ -4,7 +4,7 @@ A MiSTer FPGA core for Konami's Firebeat arcade hardware (MAME's `konami/firebea
 with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 **Status: ParaParaParadise and Pop'n Music boot and play on the board. Released:
-`Arcade-Firebeat_20261101.rbf` (ParaParaParadise), `Arcade-Firebeat_popn_20261103.rbf` (Pop'n Music).**
+`Arcade-Firebeat_ppp_20261101.rbf` (ParaParaParadise), `Arcade-Firebeat_popn_20261103.rbf` (Pop'n Music).**
 
 ## Contents
 
@@ -31,6 +31,10 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
 ## History
 
 **20261103**
+* ParaParaParadise's core renamed `Arcade-Firebeat_ppp_20261101.rbf` (`<rbf>Firebeat_ppp</rbf>`),
+  the same bitstream: beside the Pop'n Music core, `<rbf>Firebeat</rbf>` loaded the Pop'n core and
+  ParaParaParadise showed a black screen. Replace the ParaParaParadise `.mra` files; the old
+  `Firebeat_20261101.rbf` can be deleted
 * Pop'n Music: `Arcade-Firebeat_popn_20261103.rbf`, popn4-8, Animelo, Animelo 2, Mickey Tunes and clones
 * `Firebeat_disc_slots.zip`: every set's discs mounted ahead of time
 
@@ -41,7 +45,7 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 ## Games
 
-ParaParaParadise and Pop'n Music run on two revisions of the core: `Firebeat` (the main board) and
+ParaParaParadise and Pop'n Music run on two revisions of the core: `Firebeat_ppp` (the main board) and
 `Firebeat_popn` (the main board plus Pop'n Music's SPU board: a 68000, an RF5C400 and a DVD drive).
 Each `.mra` names its revision.
 
@@ -70,10 +74,10 @@ screen, the board held in reset, rather than boot on whatever BIOS the last set 
 
 #### 1. Core and .mra
 
-* Take the latest `Arcade-Firebeat_*.rbf` from `releases/` and put it in `_Arcade/cores`, renamed
-  to drop the `Arcade-` prefix (`Arcade-Firebeat_YYYYMMDD.rbf` becomes `Firebeat_YYYYMMDD.rbf`).
-  MiSTer launches the highest-sorting match for `<rbf>Firebeat</rbf>`, and a `Firebeat_*.rbf` sorts
-  above every `Arcade-Firebeat_*.rbf`
+* Take the latest `Arcade-Firebeat_ppp_*.rbf` from `releases/` and put it in `_Arcade/cores`,
+  renamed to drop the `Arcade-` prefix (`Arcade-Firebeat_ppp_YYYYMMDD.rbf` becomes
+  `Firebeat_ppp_YYYYMMDD.rbf`). MiSTer launches the highest-sorting match for
+  `<rbf>Firebeat_ppp</rbf>`, and a `Firebeat_ppp_*.rbf` sorts above every `Arcade-Firebeat_ppp_*.rbf`
 * Take the `*.mra` files and the `_alternatives` folder from `releases/` and put them in `_Arcade`
   (or a subdirectory starting with an underscore, e.g. `_Arcade/_Firebeat`)
 

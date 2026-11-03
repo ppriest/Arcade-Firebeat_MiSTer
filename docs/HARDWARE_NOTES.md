@@ -1003,6 +1003,59 @@ its RAM follows where each timer interrupt lands, and an in-order comparison nee
 taken at MAME's instruction: the bench driving IPL itself, from the PC and SR MAME pushed at each
 interrupt (in the trace), instead of the RTL's own timer.
 
+## Keyboardmania in MAME: kbm (Phase 9 step 1)
+
+`firebeat.exe` at `6d050b58d23` (the measurement branch; that commit latches `gcu_sub`'s counters
+on `rscreen`'s vblank, which MAME otherwise leaves unconnected). Runs headless through
+`scripts/mame/kbm_tap.lua` (with `gcu_stats.lua`); output in `debug/kbm-*` (gitignored).
+
+**Boot and install.** A blank NVRAM stops at E161 BACKUP BATTERY ERROR (the RTC never started).
+With a started RTC (ppp11's `.nv` as a seed) it stops at E150 BACKUP DATA ERROR. Test (held 120
+frames at frame 6000), 2P x5 to BACKUP CLEAR, 1P+2P, 1P (DEFAULT) clears it; Test then shows
+TEST MODE EXIT OK?, which did not take a 1P press, but the cleared NVRAM boots to attract
+(`debug/nvram/kbm-installed/`). The sound flash stays blank (0 non-FF bytes), and no Test entry
+writes it. Attract from about frame 3000.
+
+**Video mode.** `rscreen` and `lscreen` both 640 x 480 at 59.94 Hz until about frame 2000 (the
+BIOS), then 512 x 384 at 58.3172 Hz: the 16.6666 MHz mode (`control_w` bit 0, F:1036-1062),
+switched on both GCUs at once. Read from `screen.width/height/refresh` every 1,000 frames
+(`debug/kbm-screens/screens.txt`). The game does not run in the 25.175 MHz mode.
+
+**GCU per frame**, run `debug/kbm-play` (19,275 frames: attract, coin and start at 4000-5200,
+stage 1 from about 5400 with keys pressed, game over and attract after about 7500). Each GCU scans
+567,600 display pixels a frame (about 2.9 contexts of 512 x 384).
+
+| | `gcu` play | `gcu_sub` play | `gcu` whole run | `gcu_sub` whole run |
+|---|---|---|---|---|
+| object source pixels, median / max | 158,241 / 282,990 | 137,392 / 229,226 | 124,297 / 713,524 | 123,318 / 710,337 |
+| object destination pixels, median / max | 146,987 / 262,558 | 128,900 / 215,560 | 105,294 / 705,195 | 103,693 / 702,175 |
+| fill pixels, median / max | 203,553 / 403,149 | 203,973 / 403,149 | 203,637 / 933,960 | 203,973 / 933,960 |
+| display-list entries, max | 58 | 44 | 132 | 89 |
+| highest VRAM pixel read | 12,287,479 | 16,776,271 | 16,646,728 | 16,776,271 |
+
+16-bit VRAM accesses (source + destination + blend + fill + characters + scan-out) at 58.32 Hz,
+both GCUs together: play median 252 MB/s, p95 275, max 310; whole run median 246, p95 456,
+max 500 (attract frames with 310,000 blended pixels on each GCU at once). ppp's worst play frame
+is 236 MB/s for one GCU. Each GCU reads to the top of its 32 MB: 64 MB of VRAM.
+
+**MIDI UART** (`duart_midi`, PPC at `70000000` + register x 0x100, chan0 registers 0-7, chan1
+8-15; top byte lane). Both channels set to 8N1 by LCR at frame 1991. The game reads RBR, IIR and
+LSR on both channels; it writes THR on chan1 only:
+
+- **To the XT446** (chan1 TX, frames 2006-7432): 2,138 bytes, 361 of them active sensing (FE). 24
+  XG SysEx messages at stage start (frame 5388-5443): `F0 43 10 4C 00 00 7E 00 F7` (XG System
+  On), master and effect settings at `00 00 04/06`, and Insertion Effect 1 and 2 blocks
+  (`03 00 ..`, `03 01 ..`). Bank select (CC 0, 32), NRPN (CC 98, 99, 6), CC 7, 10, 71-74, 91, 123
+  per channel; program changes on channels 0-4. 198 note-ons, 197 note-offs, one a key pressed in
+  play. At most 32 bytes in a frame. Nothing is sent in attract.
+- **From the keyboards** (MAME's `midikbd.cpp`, a 10 ms scan): `90 nn 7F` on a key down, `80 nn 7F`
+  on a key up, notes 3C-53 for the 24 keys, else one FE. Each keyboard's bytes arrive on its own
+  channel (chan1 left, chan0 right).
+
+**Other extend-board traffic.** `70006000` (IRQ enable) written 129,707 times; `7000A000` (IRQ
+active) read 35,214 times; wheels at `70008000` read 182,744 times; lamps at `7D000804` written
+176,587 times. YMZ280B: 5,606 writes, 148 key-ons over the run, playing from the blank sound flash.
+
 ## Feasibility
 
 Open. Each item names what would close it. ppp11 measurements are in "Measured in MAME: ppp11" above; the other families are not measured.
