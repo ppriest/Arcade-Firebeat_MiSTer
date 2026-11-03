@@ -116,6 +116,20 @@ function automatic logic [31:0] gpr_rd(input int p);
     if (wr1_en && wr1_idx == r) return wr1_val;
     return gz[r] ? 32'h0 : lvt[r] ? gr_2[p] : gr_1[p];
 endfunction
+// [Firebeat] gpr_rd as the operands take it: the banks' value, and apart the zero from reset, so
+// that the 32:1 choice of gz is not a clear on the operand registers (the fetch to o_v path)
+function automatic logic [31:0] gpr_rv(input int p);
+    logic [4:0] r;
+    r = gr_a[p];
+    if (wr2_en && wr2_idx == r) return wr2_val;
+    if (wr1_en && wr1_idx == r) return wr1_val;
+    return lvt[r] ? gr_2[p] : gr_1[p];
+endfunction
+function automatic logic gpr_z(input int p);
+    logic [4:0] r;
+    r = gr_a[p];
+    return gz[r] && !(wr2_en && wr2_idx == r) && !(wr1_en && wr1_idx == r);
+endfunction
 logic [31:0] cr, lr, ctr, msr;
 logic [31:0] xer;            // SO in bit 31 as the architecture has it
 
@@ -729,6 +743,7 @@ assign gr_a[6] = nh0[15:11];
 assign gr_a[7] = nh0[25:21];
 logic [31:0] o_v [3];        // its operands a, b, s (below)
 logic [2:0]  o_s1, o_s2;
+logic [2:0]  o_z;            // [Firebeat] the operand is still zero from reset: o_v is not used
 logic [31:0] w1_q, w2_q;
 
 always_ff @(posedge clk) begin
@@ -1214,11 +1229,13 @@ always_ff @(posedge clk) begin
         r0[0] = nh0[20:16]; r0[1] = nh0[15:11]; r0[2] = nh0[25:21];
         r1[0] = nh1[20:16]; r1[1] = nh1[15:11]; r1[2] = nh1[25:21];
         for (int k = 0; k < 3; k++) begin
-            o_v[k] <= nh_sel ? ((dbg_we && dbg_wsel == {1'b0, r1[k]}) ? dbg_wdata : gpr_rd(k))
-                             : ((dbg_we && dbg_wsel == {1'b0, r0[k]}) ? dbg_wdata : gpr_rd(k + 5));
+            o_v[k] <= nh_sel ? ((dbg_we && dbg_wsel == {1'b0, r1[k]}) ? dbg_wdata : gpr_rv(k))
+                             : ((dbg_we && dbg_wsel == {1'b0, r0[k]}) ? dbg_wdata : gpr_rv(k + 5));
+            o_z[k] <= nh_sel ? !(dbg_we && dbg_wsel == {1'b0, r1[k]}) && gpr_z(k)
+                             : !(dbg_we && dbg_wsel == {1'b0, r0[k]}) && gpr_z(k + 5);
             o_s1[k] <= w1_en && w1_idx == r[k] && !reset;
             o_s2[k] <= w2_en && w2_idx == r[k] && !reset;
-            if (reset) o_v[k] <= 32'h0;
+            if (reset) begin o_v[k] <= 32'h0; o_z[k] <= 1'b0; end
         end
         w1_q <= w1_val; w2_q <= w2_val;
         h_st <= is_store(nh) && !reset;
@@ -1236,7 +1253,7 @@ end
 
 always_comb begin
     logic [31:0] o [3];
-    for (int k = 0; k < 3; k++) o[k] = o_s2[k] ? w2_q : o_s1[k] ? w1_q : o_v[k];
+    for (int k = 0; k < 3; k++) o[k] = o_s2[k] ? w2_q : o_s1[k] ? w1_q : o_z[k] ? 32'h0 : o_v[k];
     va = o[0]; vb = o[1]; vs = o[2];
 end
 

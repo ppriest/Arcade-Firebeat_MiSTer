@@ -1,2 +1,5 @@
-rtl/board/fb_spu.sv
+rtl/cpu/fx68k/fx68kAlu.sv
+rtl/cpu/fx68k/uaddrPla.sv
+rtl/cpu/fx68k/fx68k.sv
+rtl/spu/fb_spu68k.sv
 sim/spu_tb/tb_spu.sv

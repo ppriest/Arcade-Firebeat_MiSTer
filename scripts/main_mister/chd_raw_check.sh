@@ -21,6 +21,7 @@ if [ ! -x "$OUT/chd_raw_check" ] || [ "$HERE/chd_raw_check.cpp" -nt "$OUT/chd_ra
 	g++ -o chd_raw_check *.o
 fi
 while [ $# -ge 2 ]; do
+	if [ $# -ge 3 ] && [[ "$3" =~ ^[0-9]+$ ]]; then echo "== $1 from $3"; "$OUT/chd_raw_check" "$1" "$2" "$3"; shift 3; continue; fi
 	echo "== $1"
 	"$OUT/chd_raw_check" "$1" "$2"
 	shift 2

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // One ATAPI CD-ROM drive as MAME runs it. CSEL 0 is the master (firebeat's program CD), 1 the
-// slave (the audio CD).
+// slave (the audio CD). Pop'n Music's SPU drive (ATAPI_DVDROM, a CD-ROM drive to MAME but for its
+// image) is a master on its own bus.
 //
 // Protocol (machine/atahle.cpp, bus/ata/atapihle.cpp): the task file, reset and diagnostic with
 // MAME's timers (device-1 detection, diagnostic and PDIAG wait 2 ms each; SET FEATURES and CACHE
@@ -11,7 +12,7 @@
 // Commands (bus/ata/atapicdr.cpp ExecCommand, machine/t10mmc.cpp, t10spc.cpp, sound/cdda.cpp): the
 // media-change gate (UNIT ATTENTION 28h until TEST UNIT READY, after power-on or a new disc),
 // TEST UNIT READY, REQUEST SENSE (with t10mmc's audio-status sense), INQUIRY, START STOP UNIT,
-// PREVENT ALLOW, READ CAPACITY, READ(10), READ SUB-CHANNEL format 1, READ TOC format 0,
+// PREVENT ALLOW, READ CAPACITY, READ(10), READ(12), READ SUB-CHANNEL format 1, READ TOC format 0,
 // PLAY AUDIO(10)/(12), STOP PLAY/SCAN, SET CD SPEED, MODE SELECT(10) (audio-page volumes kept for
 // Phase 4); anything else completes with no data, as t10spc's default.
 //
@@ -23,6 +24,11 @@
 //
 // Access (fb_ata): a one-clock strobe; every drive takes every write; the selected drive answers
 // a read (resp) with its data the clock after, MAME's internal 16-bit value (low byte first).
+//
+// DMA (atapihle fill_buffer): a PACKET with the feature register's bit 0 transfers its data with
+// DMARQ instead of INTRQ, a buffer at a time; dma_acc reads a word as the data register does
+// (resp, rd the clock after), and an emptied buffer is refilled with no interrupt. The end of the
+// data raises INTRQ as before. Strobes (acc, dma_acc) are at least two clocks apart.
 
 module fb_atapi #(
     parameter bit CSEL = 1'b0
@@ -38,6 +44,8 @@ module fb_atapi #(
     input  logic [15:0] wd,
     output logic        resp,
     output logic [15:0] rd,
+    input  logic        dma_acc,
+    output logic        dmarq,
 
     output logic        irq_o,
     output logic        dasp_o,
@@ -123,7 +131,7 @@ module fb_atapi #(
     `ST(7'h28, {dout[51], dout[50], dout[49], dout[48]}) \
     `ST(7'h29, {dout[55], dout[54], dout[53], dout[52]}) \
     `ST(7'h2A, {dout[59], dout[58], dout[57], dout[56]}) \
-    `ST(7'h2B, {dout[63], dout[62], dout[61], dout[60]})
+    `ST(7'h2B, {dout[63], dout[62], dout[61], dout[60]})     `ST(7'h2C, dma_x)
 `define FB_ATAPI_ST_E \
     `ST(7'h41, e_skey) \
     `ST(7'h42, sasc) \
@@ -222,9 +230,11 @@ logic [15:0] boff, bsize;
 logic [31:0] dsize;
 logic        pdiag_q;
 logic        fill_wait, wout_wait;
+logic        dma_x;                     // the PACKET's data goes by DMA
 
 wire selected = devhead[4] == CSEL;
 assign irq_o = selected && !devctl[1] && irq;
+assign dmarq = selected && dma_x && status[3] && !status[7];
 
 always_ff @(posedge clk) begin
     logic do_fill, do_wbuf, do_sig;
@@ -304,6 +314,16 @@ always_ff @(posedge clk) begin
         resp <= selected;
         rd <= v;
     end
+    if (dma_acc && dmarq) begin         // dma_r: read_data
+        rd <= br_q;
+        resp <= 1'b1;
+        br_a <= br_a + 11'd1;
+        boff <= boff + 16'd2;
+        if (boff + 16'd2 >= bsize) begin
+            boff <= '0; status[3] <= 1'b0;
+            do_fill = 1'b1;
+        end
+    end
     if (acc && we && !cs1) begin
         // command_w: a register other than data written during DRQ aborts the transfer
         if (status[3] && off != 3'd0 && (off != 3'd6 || wd[7:0] != devhead)) begin
@@ -331,6 +351,7 @@ always_ff @(posedge clk) begin
             3'd6: devhead <= wd[7:0];
             3'd7: if (selected || command == 8'h90) begin
                 command <= wd[7:0];
+                dma_x <= 1'b0;
                 boff <= '0;
                 status[0] <= 1'b0; error <= 8'h00;
                 irq <= 1'b0; dasp_o <= 1'b0;
@@ -394,8 +415,9 @@ always_ff @(posedge clk) begin
         status[7] <= 1'b0;
         br_a <= {f_dhalf, 10'd0};
         status[3] <= 1'b1;
-        if (command == 8'hA1) begin count <= 8'h02; irq <= 1'b1; end
-        else begin count <= 8'h02; irq <= 1'b1; end
+        count <= 8'h02;
+        if (command == 8'hA0 && feature[0]) dma_x <= 1'b1;
+        else irq <= 1'b1;
     end
 
     // ---- fill_buffer (sizes from the state after x_done / read_buffer_empty)
@@ -409,7 +431,7 @@ always_ff @(posedge clk) begin
             if ({16'd0, n} >= ds) n = ds[15:0] & 16'hFFFE;
             else begin
                 if (n[0]) n = n - 16'd1;
-                if (cmd[0] == 8'h28 && n[10:0] != 11'd0) n = {n[15:11], 11'd0};
+                if ((cmd[0] == 8'h28 || cmd[0] == 8'hA8) && n[10:0] != 11'd0) n = {n[15:11], 11'd0};
             end
             bsize <= n; cyll <= n[7:0]; cylh <= n[15:8];
             if (n != 16'd0) begin
@@ -444,7 +466,7 @@ always_ff @(posedge clk) begin
     if (reset) begin
         status <= 8'h80; devctl <= 8'h00; resetting <= 1'b1; irq <= 1'b0; dasp_o <= CSEL; pdiag_o <= 1'b0;
         error <= 8'h00; feature <= 8'h00; count <= 8'h00; secnum <= 8'h00; cyll <= 8'h00; cylh <= 8'h00;
-        devhead <= 8'h00; command <= 8'h00; packet <= 1'b0; boff <= '0; bsize <= '0; single <= 1'b0;
+        devhead <= 8'h00; command <= 8'h00; packet <= 1'b0; boff <= '0; bsize <= '0; single <= 1'b0; dma_x <= 1'b0;
         busy_on <= 1'b1; btmr <= 12'd2000; bparam <= CSEL ? P_DIAG : P_DETECT;
     end
 `ifdef VERILATOR
@@ -716,6 +738,13 @@ always_ff @(posedge clk) begin
                 x_phase <= PH_IN; x_len <= {5'd0, cmd[7], cmd[8], 11'd0};
                 pf_on <= 1'b0; pf_ok <= 1'b0;
             end
+            8'hA8: begin                // the length's 24 bits (t10mmc); x_len holds 21 of them
+                lba <= {cmd[2], cmd[3], cmd[4], cmd[5]};
+                blocks <= {8'd0, cmd[7], cmd[8], cmd[9]};
+                if (a_play) begin a_play <= 1'b0; a_ended <= 1'b1; audio_sense <= ASC_STOPPED; end
+                x_phase <= PH_IN; x_len <= {cmd[7][4:0], cmd[8], cmd[9], 11'd0};
+                pf_on <= 1'b0; pf_ok <= 1'b0;
+            end
             8'h42: begin
                 x_phase <= PH_IN; x_len <= {16'd0, cmd[7], cmd[8]};
                 if (cmd[3] != 8'd1) bad <= 1'b1;
@@ -833,7 +862,7 @@ always_ff @(posedge clk) begin
         identify <= command == 8'hA1;
         bi <= '0;
         if (command == 8'hA1) g <= G_BYTE;
-        else if (cmd[0] == 8'h28) begin
+        else if (cmd[0] == 8'h28 || cmd[0] == 8'hA8) begin
             if (f_n > 16'd2048) bad <= 1'b1;
             if (pf_on && pf_ok && pf_lba == lba) begin
                 // the prefetched sector: the host takes it now

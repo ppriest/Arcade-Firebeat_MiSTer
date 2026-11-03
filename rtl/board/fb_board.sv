@@ -9,11 +9,11 @@
 //   0x00000000-0x01FFFFFF  work RAM          SDRAM word port
 //   0x40000000-0x4000000F  the 403's serial port and the DS1991 (fb_spu), bytes
 //   0x70006000             extend board IRQ enable (write), 0x7000A000 its active bits (read, inverted)
-//   0x74000000-0x740003FF  SPU shared RAM, absent on ppp: reads 0
+//   0x74000000-0x740003FF  the SPU's dual-port RAM (POPN: dp_*), bytes; absent on ppp: reads 0
 //   0x7D000200-0x7D00021F  cabinet: offset 0 cabinet_info << 28, else 0
 //   0x7D000320-0x7D000327  lamps (dropped); 0x7D000804 lamps
-//   0x7D000340-0x7D00035F  sensors, halfwords 0-3: SENSORn | 0x0100, else 0
-//   0x7D000400-0x7D000401  YMZ280B (fb_ymz280b), bytes
+//   0x7D000340-0x7D00035F  sensors, halfwords 0-3: SENSORn | 0x0100, else 0 (not POPN)
+//   0x7D000400-0x7D000401  YMZ280B (fb_ymz280b), bytes (not POPN)
 //   0x7D000500-0x7D000501  control_w, bytes
 //   0x7D000800-0x7D000803  IN0-IN3, bytes
 //   0x7D400000, 0x7D800000, 0x7DA00000  the three flash chips (fb_flash), bytes
@@ -27,14 +27,19 @@
 // Byte devices are accessed once per byte lane enabled, halfword devices once per halfword, lane
 // 0 (bits 31:24) at the lowest address, as MAME's handlers on the 32-bit big-endian bus.
 //
-// Interrupts (firebeat.cpp:1152-1160): IRQ0 the GCU, IRQ4 the ATA; the 403's serial port and DMA
-// internal. The timebase, PIT and FIT count at 66 MHz: 99 clocks in 100 of clk (66.667 MHz).
+// Interrupts (firebeat.cpp:1152-1160, 1195): IRQ0 the GCU, IRQ3 the SPU's mailbox (POPN), IRQ4 the
+// ATA; the 403's serial port and DMA internal.
+//
+// POPN: the Pop'n Music board (firebeat_popn_map): the SPU's dual-port RAM in, the YMZ280B and the
+// sensors out. popn4's PPC trace to frame 4,500 reaches neither (HARDWARE_NOTES). The timebase, PIT and FIT count at 66 MHz: 99 clocks in 100 of clk (66.667 MHz).
 //
 // mon_*: each bus access to the ranges MAME's capture taps (0x40000000-0x4000000F,
 // 0x70000000-0x7FF7FFFF), at its end, as the taps see it (one per CPU or DMA access, the mask from
 // the byte enables, the data read or written) -- sim/board_tb compares them with io.txt.
 
-module fb_board (
+module fb_board #(
+    parameter bit POPN = 1'b0
+) (
     input  logic         clk,
     input  logic         reset,
     input  logic         por,            // power-on: the RTC (MAME's has no reset) and the mounted discs, which a board reset leaves alone
@@ -88,7 +93,7 @@ module fb_board (
     input  logic [31:0]  vm_rdata,
     input  logic [31:0]  vm_rdata_hi,
 
-    // the discs: hps_io image slots 0 (program CD) and 1 (audio CD)
+    // the discs: hps_io image slots 0 (program CD) and 1 (audio CD; not POPN's)
     input  logic [1:0]   img_mounted,
     input  logic [63:0]  img_size,
     output logic [31:0]  sd_lba [2],
@@ -102,6 +107,14 @@ module fb_board (
     input  logic [7:0]   in0, in1, in2, in3,
     input  logic [15:0]  sensor [4],
     input  logic [3:0]   cabinet_info,
+    // POPN: the PPC's side of the SPU's dual-port RAM (fb_spu68k pp_*), its answer the clock after
+    // dp_cs, and its mailbox interrupt
+    output logic         dp_cs,
+    output logic         dp_we,
+    output logic [9:0]   dp_addr,
+    output logic [7:0]   dp_wd,
+    input  logic [7:0]   dp_rd,
+    input  logic         dp_irq,
     output logic signed [15:0] aud_l, aud_r,   // the speaker: YMZ280B and CD audio (firebeat.cpp's routes)
     output logic [7:0]   control,
     output logic         nv_wr,          // a CPU write reached the flash or the RTC: the NVRAM file is stale
@@ -222,7 +235,7 @@ ppc403_core #(.PVR(32'h0020_1400)) u_cpu (
 );
 // an instruction starts only in a clock the CPU is enabled (the core's dbg_exec is not gated)
 assign dbg_exec = dbg_exec_c && ce_cpu;
-assign ext_irq = {ata_irq, 3'b000, gcu_irq} | irq_force;
+assign ext_irq = {ata_irq, POPN && dp_irq, 2'b00, gcu_irq} | irq_force;
 // the core's line_bits: [2] SPU receive (EXISR bit 4, MAME's PPC4XX_IRQ_BIT_SPUR), [1] SPU transmit,
 // [8:5] DMA channels 0-3 high to low (PPC4XX_IRQ_BIT_DMA0 is bit 8)
 assign int_irq = {dma_irq[0], dma_irq[1], dma_irq[2], dma_irq[3], 2'b00, spu_irq_rx, spu_irq_tx, 1'b0};
@@ -268,7 +281,7 @@ fb_ppc_dma u_dma (
 // ---------------------------------------------------------------- the bus
 typedef enum logic [4:0] {
     D_RAM, D_BIOS, D_SPU, D_XIRQW, D_XIRQR, D_CAB, D_SENS, D_YMZ, D_CTRL, D_IN, D_FLASH, D_RTC,
-    D_XRAM, D_GCU, D_ATA0, D_ATA1, D_UART, D_NONE
+    D_XRAM, D_GCU, D_ATA0, D_ATA1, D_UART, D_DPR, D_NONE
 } dev_t;
 
 function automatic dev_t decode(input logic [30:0] a);
@@ -278,8 +291,9 @@ function automatic dev_t decode(input logic [30:0] a);
     if (a[30:2] == 29'h1C00_1800) return D_XIRQW;              // 0x70006000
     if (a[30:2] == 29'h1C00_2800) return D_XIRQR;              // 0x7000A000
     if (a[30:5] == 26'h3E8_0010) return D_CAB;                 // 0x7D000200-21F
-    if (a[30:5] == 26'h3E8_001A) return D_SENS;                // 0x7D000340-35F
-    if (a[30:1] == 30'h3E80_0200) return D_YMZ;                // 0x7D000400-401
+    if (POPN && a[30:10] == 21'h1D_0000) return D_DPR;         // 0x74000000-3FF
+    if (!POPN && a[30:5] == 26'h3E8_001A) return D_SENS;       // 0x7D000340-35F
+    if (!POPN && a[30:1] == 30'h3E80_0200) return D_YMZ;       // 0x7D000400-401
     if (a[30:1] == 30'h3E80_0280) return D_CTRL;               // 0x7D000500-501
     if (a[30:2] == 29'h1F40_0200) return D_IN;                 // 0x7D000800-803
     if (a[30:21] == 10'h3EA || a[30:21] == 10'h3EC || a[30:21] == 10'h3ED) return D_FLASH;
@@ -310,7 +324,7 @@ assign b_rdata = r_rdata;
 // byte and halfword devices: the lane in hand
 wire        byte_dev = r_dev == D_SPU || r_dev == D_YMZ || r_dev == D_CTRL || r_dev == D_IN ||
                        r_dev == D_FLASH || r_dev == D_RTC || r_dev == D_XRAM || r_dev == D_XIRQW || r_dev == D_XIRQR ||
-                       r_dev == D_UART;
+                       r_dev == D_UART || r_dev == D_DPR;
 wire [30:0] l_addr = {r_addr[30:2], r_lane};
 wire [7:0]  l_wd = r_wdata[31 - 8*r_lane -: 8];
 
@@ -372,6 +386,7 @@ always_ff @(posedge clk) begin
         case (r_dev)
         D_SPU: if (!ln_go) begin done = 1'b1; q = spu_q; end
         D_UART: if (!ln_go) begin done = 1'b1; q = uart_q; end
+        D_DPR: if (!ln_go) begin done = 1'b1; q = dp_rd; end
         D_RTC, D_XRAM: if (!ln_go) begin done = 1'b1; q = rtc_q; end
         D_YMZ: if (ymz_ack) begin done = 1'b1; q = ymz_q; end
         D_FLASH: if (fl_ack) begin done = 1'b1; q = fl_q; end
@@ -445,6 +460,10 @@ assign gcu_req = bs == B_WAIT && r_dev == D_GCU && !gcu_ack;
 
 assign ata_req = bs == B_LANE && (r_dev == D_ATA0 || r_dev == D_ATA1) && !ata_ack;
 assign uart_req = lane_go && r_dev == D_UART;
+assign dp_cs   = lane_go && r_dev == D_DPR;
+assign dp_we   = r_we;
+assign dp_addr = l_addr[9:0];
+assign dp_wd   = l_wd;
 
 // ---------------------------------------------------------------- the SDRAM word port
 // the bus (work RAM, BIOS) or the flash chips, held from request to acknowledge, the bus first
@@ -506,6 +525,7 @@ fb_flash u_flash (
 );
 
 logic signed [15:0] ymz_l, ymz_r, cd_l, cd_r;
+generate if (!POPN) begin : g_ymz
 fb_ymz280b u_ymz (
     .clk, .reset,
     .req(ymz_req), .we(r_we), .a0(l_addr[0]), .wdata(l_wd), .ack(ymz_ack), .rdata(ymz_q),
@@ -513,6 +533,9 @@ fb_ymz280b u_ymz (
     .out_l(ymz_l), .out_r(ymz_r), .tick(),
     .reg_q(st_ymz), .reg_a(st_a[7:0])
 );
+end else begin : g_no_ymz
+assign {ymz_ack, ymz_q, y_req, y_addr, ymz_l, ymz_r, st_ymz} = '0;
+end endgenerate
 
 fb_gcu_shell u_gcu (
     .clk, .reset,
@@ -531,7 +554,7 @@ fb_gcu_shell u_gcu (
 
 // the ATA interface: MAME's internal value is the bus halfword byte-swapped
 wire [15:0] ata_wd = (r_lane == 2'd0) ? {r_wdata[23:16], r_wdata[31:24]} : {r_wdata[7:0], r_wdata[15:8]};
-fb_ata u_ata (
+fb_ata #(.NO_DISC1(POPN)) u_ata (
     .clk, .reset, .por,
     .req(ata_req), .we(r_we), .cs1(r_dev == D_ATA1), .off({r_addr[3:2], r_lane[1]}), .wdata(ata_wd),
     .ack(ata_ack), .rdata(ata_q), .irq(ata_irq),

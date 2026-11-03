@@ -1,0 +1,35 @@
+<misterromdescription>
+    <name>Pop'n Music 4</name>
+    <setname>popn4</setname>
+    <rbf>Firebeat_popn</rbf>
+    <mameversion>0289</mameversion>
+    <year>2000</year>
+    <manufacturer>Konami</manufacturer>
+    <category>Rhythm</category>
+    <rotation>horizontal</rotation>
+
+    <!-- rtl/firebeat_sys.sv's download: the BIOS (ROM_LOAD16_WORD_SWAP), the SPU's program
+         (likewise) at 0x80000, the dongle at 0x100000, the RTC preset at 0x102000 (the NVRAM
+         file, loaded after, replaces it); written and checked by scripts/gen_mra.py. The discs go in the OSD's slots:
+         gq986jaa01.chd as the program CD, gq986jaa02.chd as the data DVD. -->
+    <rom index="0" zip="popn4.zip" md5="none">
+        <interleave output="16">
+            <part name="a02jaa03.21e" crc="43ecc093" map="12"/>
+        </interleave>
+        <interleave output="16">
+            <part name="a02jaa04.3q" crc="8c6000dd" map="12"/>
+        </interleave>
+        <part name="gq986_gc986" crc="df7935c4"/>
+        <part repeat="0x1f38">FF</part>
+        <part name="rtc" crc="4a5c946c"/>
+    </rom>
+    <!-- the cabinet register's nibble (firebeat.cpp cabinet_r; Firebeat.sv): 00 Japan (init_popn_jp) -->
+    <rom index="1">
+        <part>00</part>
+    </rom>
+    <!-- the three flash chips (6 MB) and the RTC (MAME's .nv, 4,152 bytes): the installed game and its
+         settings (rtl/firebeat_sys.sv, ioctl index 4) -->
+    <nvram index="4" size="6295608"/>
+    <!-- Firebeat.sv's J1 line: joystick bit 4 + i is name i -->
+    <buttons names="White 1,Yellow 1,Green 1,Blue 1,Red,Blue 2,Green 2,Yellow 2,White 2,Coin,Test,Service,Pause" count="1"/>
+</misterromdescription>

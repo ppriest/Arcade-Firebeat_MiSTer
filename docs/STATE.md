@@ -26,6 +26,11 @@ every frame.
 | ATAPI packet and data-out bytes | `fb_atapi.sv` `cmd`, `dout` | 8 x 12; 8 x 64 | 76 a drive | yes |
 | disc TOC | `rtl/board/fb_cd_slot.sv` `t_lo`, `t_hi`, `t_fl`, `t_ct` | 48 x 128 | 768 a drive | skip: read from the slot again at mount |
 | DMA source blocks | `rtl/board/fb_ppc_dma.sv` `blk`, `fb` | 256 x 3 | 96 | skip if the dump waits for the DMA to be idle |
+| SPU RAM | `rtl/spu/fb_spu68k.sv` `ram_h`, `ram_l` | 8 x 128K x 2 | 256 KB | yes; not yet reachable from the dump |
+| SPU dual-port RAM | `fb_spu68k.sv` `dp` | 8 x 1024 | 1 KB | yes; not yet reachable |
+| SPU program ROM | SDRAM 0x2880000 | 16 x 256K | 512 KB | skip: the `.mra` |
+| SPU wave RAM | SDRAM 0x4000000 | 16 x 16M | 32 MB | yes: loaded from the DVD by the game |
+| RF5C400 channel registers and state | `rtl/spu/fb_rf5c400.sv` `r_*`, `s_mem`, `offs` | 32 x (11 x 16 + 22); 32 x 106; 32 x 16 | ~1.5 KB | yes; not yet reachable |
 | display line buffer | `rtl/video/fb_gcu_disp.sv` `g_lb` | 18 x 512 x 4 | 4.5 KB | skip: rebuilt every line |
 
 ## Registers and FSMs
@@ -35,6 +40,7 @@ every frame.
 | cache dirty, LRU | `fb_cache.sv` `dt`, `lru` (valid bits: in the tag RAMs, `tmem`'s top bit) | I 1,024, D 512 | with the cache contents | none (MAME has no cache) |
 | ATAPI task file, timers, sense, media change, play position | `fb_atapi.sv` (status ... a_smp) | ~400 a drive | yes | atahle/atapihle/t10mmc/cdda save_items |
 | SPU registers, timer counters | `fb_spu.sv` | ~120 | yes | ppccom `m_spu` |
+| SPU 68000 (fx68k), mailboxes, IRQ2/6, timer, DMA address, wave bank; the SPU drive | `fb_spu68k.sv`, `firebeat_sys.sv` `g_spu` | fx68k's internal state | yes; fx68k has no state port, the dump does not reach them yet | m68000, firebeat_spu_state save_items |
 | flash modes, status, erase timers, the background erase | `rtl/board/fb_flash.sv` | ~180 | yes | intelfsh save_items |
 | RTC index, page, update and periodic timers | `fb_rtc65271.sv` | ~110 | yes | rtc65271 save_items |
 | PC16552D registers, THR-empty pending | `rtl/board/fb_pc16552.sv` | ~100 | yes | ins8250 save_items |
@@ -66,6 +72,7 @@ the registers and lets the game replay; Tier 2 continues bit-exactly.
 | scan-out line buffer | refilled every line from VRAM |
 | DMA source blocks, the GCU's queue and row buffers, DDR3 read FIFO, SDRAM request pipeline | a dump waits for idle; nothing in them is state the next request does not re-derive |
 | ATAPI transfer buffers while no transfer is under way | refilled from the slot per read |
+| SNAC pad poller (`rtl/mister/psx_pad_snac.sv`) | the host's controller, not the board's; re-read at the next poll (2 ms) |
 | YMZ280B sample cache (`debug/ymz_ref` is the reference) | the samples are in the flash, which is saved |
 
 ## The state dump

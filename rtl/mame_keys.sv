@@ -1,10 +1,10 @@
 // MAME's default keys (src/emu/inpttype.ipp) in hps_io's joystick layout, to
 // OR into joystick_0/1: right, left, down, up at bits 0-3, buttons 1-7 at 4-10,
 // Start, Coin, Pause, Service at the J1 line's own positions (parameters).
-// BUTTONS limits the button keys decoded, so a J1 line with fewer than seven
+// BUTTONS limits the button keys decoded, so a J1 line with fewer than nine
 // buttons keeps its Start and Coin bits free of them.
 //
-//   P1  arrows, LCtrl LAlt Space LShift Z X C, 1 start, 5 coin
+//   P1  arrows, LCtrl LAlt Space LShift Z X C V B, 1 start, 5 coin
 //   P2  R F D G, A S Q W E (MAME gives P2 no sixth key), 2 start, 6 coin
 //   F2 service (test) switch, 9 and 0 service coins 1 and 2, P pause
 //
@@ -42,6 +42,8 @@ always @(posedge clk) begin
 			9'h01A: if (BUTTONS >= 5) key0[8] <= p; // Z
 			9'h022: if (BUTTONS >= 6) key0[9] <= p; // X
 			9'h021: if (BUTTONS >= 7) key0[10] <= p; // C
+			9'h02A: if (BUTTONS >= 8) key0[11] <= p; // V
+			9'h032: if (BUTTONS >= 9) key0[12] <= p; // B
 			9'h016: key0[START]   <= p; // 1
 			9'h02E: key0[COIN]    <= p; // 5
 			9'h04D: key0[PAUSE]   <= p; // P

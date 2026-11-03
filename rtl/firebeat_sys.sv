@@ -9,6 +9,8 @@
 //   0x0000000  work RAM, 32 MB
 //   0x2000000  flash: 29F016A x 3 (main program, then the two sound chips), 6 MB
 //   0x2800000  BIOS, 512 KB
+//   0x2880000  POPN: the SPU's program ROM, 512 KB
+//   0x4000000  POPN: the SPU's wave RAM, 32 MB (the 128 MB module)
 // DDR3 (rtl/mister/hornet_ddr3.sv): VRAM, 32 MB at 0x30000000; the state dump (rtl/board/fb_dump.sv)
 // at 0x34000000, written only while the board is stopped for it.
 // The DS1991 dongle image (200 bytes) and the RTC65271's NVRAM are in the board's block RAM, loaded
@@ -17,15 +19,21 @@
 // Transfers are hps_io's 16-bit (WIDE) ones: ioctl_addr is a byte address, ioctl_dout[7:0] the
 // file's even byte. SDRAM and block RAM hold big-endian halfwords, the even byte high.
 //   index 0, the .mra's image: BIOS (ROM_LOAD16_WORD_SWAP, swapped by the .mra), then the
-//            dongle at 0x80000
+//            dongle at 0x80000; POPN: BIOS, the SPU's program (likewise swapped) at 0x80000,
+//            the dongle at 0x100000
 //   index 4, the NVRAM file, loaded after the image and saved on request: the three flash chips
-//            (0x000000-0x5FFFFF), then the RTC in MAME's .nv format (0x600000-0x601037)
+//            (0x000000-0x5FFFFF), then the RTC in MAME's .nv format (0x600000-0x601037); an
+//            RTC whose oscillator was never started (register A's DV bits 0, the core's reset
+//            state, saved from a board that never ran a game) is skipped, leaving the preset
 //
-// The board is held in reset until the image has loaded, and during every download; its CPU is
+// The board is held in reset until the image has loaded whole (to the dongle; POPN, to the RTC
+// preset's last word), and during every download; its CPU is
 // paused during the NVRAM file's upload, which reads the flash from SDRAM and the RTC from the
 // board.
 
-module firebeat_sys (
+module firebeat_sys #(
+    parameter bit POPN = 1'b0               // the Pop'n Music board: fb_board's POPN, and the SPU
+) (
     input  logic         clk,               // clk_sys, 66.667 MHz
     input  logic         clk_mem,           // 2 x clk, the SDRAM controller's
     input  logic         pll_locked,
@@ -75,7 +83,7 @@ module firebeat_sys (
     output logic [7:0]   DDRAM_BE,
     output logic         DDRAM_WE,
 
-    // the discs: hps_io image slots 0 (program CD) and 1 (audio CD)
+    // the discs: hps_io image slots 0 (program CD) and 1 (audio CD; POPN the SPU's data DVD)
     input  logic [1:0]   img_mounted,
     input  logic [63:0]  img_size,
     output logic [31:0]  sd_lba [2],
@@ -117,6 +125,7 @@ module firebeat_sys (
 
 localparam logic [26:0] FLASH_BASE = 27'h2000000;
 localparam logic [26:0] BIOS_BASE  = 27'h2800000;
+localparam logic [26:0] SPU_BASE   = 27'h2880000;
 
 // ------------------------------------------------------------------------------------------
 // transfers
@@ -127,7 +136,14 @@ wire nv_xfr = ioctl_index == 16'd4;
 wire nv_dl  = ioctl_download && nv_xfr;
 wire nv_up  = ioctl_upload && nv_xfr;
 wire nv_rtc = ioctl_addr >= 27'h600000 && ioctl_addr < 27'h601038;
-wire dg_hit = ioctl_addr[26:8] == 19'h00800;            // 0x80000-0x800FF
+// the file's RTC, unless its first word's register A (the odd byte) has DV 000
+logic nv_rtc_skip;
+wire nv_rtc_ld = nv_rtc && !(ioctl_addr == 27'h600000 ? ioctl_dout[14:12] == 3'd0 : nv_rtc_skip);
+always_ff @(posedge clk) if (ioctl_wr && nv_dl && ioctl_addr == 27'h600000) nv_rtc_skip <= ioctl_dout[14:12] == 3'd0;
+wire dg_hit = ioctl_addr[26:8] == (POPN ? 19'h01000 : 19'h00800);   // 0x80000 (POPN 0x100000), 256 bytes
+wire sp_hit = POPN && ioctl_addr[26:19] == 8'd1;                    // 0x80000-0xFFFFF
+// POPN: the set's RTC preset at 0x102000, the RTC's NVRAM until the NVRAM file (index 4) replaces it
+wire rt_hit = POPN && ioctl_addr[26:13] == 14'h81 && ioctl_addr[12:0] < 13'h1038;
 
 wire [15:0] hw_be = {ioctl_dout[7:0], ioctl_dout[15:8]};  // big-endian halfword
 
@@ -147,14 +163,18 @@ always_ff @(posedge clk) begin
     if (ioctl_wr && img_dl) begin
         if (ioctl_addr < 27'h80000) begin
             d_we <= 1'b1; d_addr <= BIOS_BASE[26:1] + ioctl_addr[26:1]; d_din <= hw_be;
+        end else if (sp_hit) begin
+            d_we <= 1'b1; d_addr <= {SPU_BASE[26:19], ioctl_addr[18:1]}; d_din <= hw_be;
         end else if (dg_hit) begin
             b2_v <= 1'b1; b2_dg <= 1'b1; b2_a <= {5'd0, ioctl_addr[7:1], 1'b1}; b2_d <= ioctl_dout[15:8];
+        end else if (rt_hit) begin
+            b2_v <= 1'b1; b2_dg <= 1'b0; b2_a <= {ioctl_addr[12:1], 1'b1}; b2_d <= ioctl_dout[15:8];
         end
     end
     if (ioctl_wr && nv_dl) begin
         if (ioctl_addr < 27'h600000) begin
             d_we <= 1'b1; d_addr <= FLASH_BASE[26:1] + ioctl_addr[26:1]; d_din <= hw_be;
-        end else if (nv_rtc && ioctl_addr + 27'd1 < 27'h601038) begin
+        end else if (nv_rtc_ld && ioctl_addr + 27'd1 < 27'h601038) begin
             b2_v <= 1'b1; b2_dg <= 1'b0; b2_a <= {ioctl_addr[12:1], 1'b1}; b2_d <= ioctl_dout[15:8];
         end
     end
@@ -162,7 +182,7 @@ always_ff @(posedge clk) begin
 end
 
 assign dg_we = (ioctl_wr && img_dl && dg_hit) || (b2_v && b2_dg);
-assign rtc_nv_we = (ioctl_wr && nv_dl && nv_rtc) || (b2_v && !b2_dg);
+assign rtc_nv_we = (ioctl_wr && ((nv_dl && nv_rtc_ld) || (img_dl && rt_hit))) || (b2_v && !b2_dg);
 wire [12:0] ld_a = b2_v ? b2_a : ioctl_addr[12:0];
 wire [7:0]  ld_d = b2_v ? b2_d : ioctl_dout[7:0];
 
@@ -257,11 +277,14 @@ logic [15:0]  gd_layer, gd_6c;
 logic [3:0][15:0] gd_alpha, gd_x, gd_y, gd_w, gd_h;
 logic [3:0][31:0] gd_base;
 
-// held until the image is in, and through every download
-logic img_loaded, img_dl_q;
+// held until the image is in, and through every download. A set with a file missing loads short,
+// and DDR3 may still hold another set's BIOS.
+logic img_loaded, img_dl_q, img_end;
 always_ff @(posedge clk) begin
     img_dl_q <= img_dl;
-    if (img_dl_q && !img_dl) img_loaded <= 1'b1;
+    if (img_dl && !img_dl_q) img_end <= 1'b0;
+    if (ioctl_wr && img_dl && ioctl_addr >= (POPN ? 27'h103036 : 27'h80000)) img_end <= 1'b1;
+    if (img_dl_q && !img_dl) img_loaded <= img_end;
     if (!pll_locked) img_loaded <= 1'b0;
 end
 assign brd_reset = reset || !pll_locked || hold || ioctl_download || !img_loaded;
@@ -298,7 +321,21 @@ end
 wire x_start = dump_start || (err_armed && ata_check[1] && ata_key[1] != 4'h6);
 
 
-fb_board u_board (
+logic signed [15:0] b_aud_l, b_aud_r;       // the board's sound; the popn revision's is the RF5C400
+logic [31:0] b_sd_lba [2];
+logic [5:0]  b_sd_blk_cnt [2];
+logic [1:0]  b_sd_rd;
+assign sd_lba[0] = b_sd_lba[0];
+assign sd_blk_cnt[0] = b_sd_blk_cnt[0];
+assign sd_lba[1] = POPN ? v_sd_lba : b_sd_lba[1];
+assign sd_blk_cnt[1] = POPN ? v_sd_blk_cnt : b_sd_blk_cnt[1];
+assign sd_rd = {POPN ? v_sd_rd : b_sd_rd[1], b_sd_rd[0]};
+
+logic       dp_cs, dp_we, dp_irq;
+logic [9:0] dp_addr;
+logic [7:0] dp_wd, dp_rd;
+
+fb_board #(.POPN(POPN)) u_board (
     .clk, .reset(brd_reset), .por(!pll_locked), .ce(!pause && !nv_up),
     .halt(x_halt), .frozen(x_frozen), .st_a, .st_d, .st_we(1'b0), .st_wd(32'd0), .ata_check, .ata_key,
     .dma_hold(1'b0), .tb_en(1'b1), .irq_force(5'd0), .dma_busy(),
@@ -308,8 +345,11 @@ fb_board u_board (
     .w_ack(b_w_ack), .w_rdata,
     .vm_read, .vm_write, .vm_addr, .vm_burst, .vm_be, .vm_wdata, .vm_be_hi, .vm_wdata_hi,
     .vm_waitn, .vm_rvalid, .vm_rdata(d_rdata), .vm_rdata_hi(d_rdata_hi),
-    .img_mounted, .img_size, .sd_lba, .sd_blk_cnt, .sd_rd, .sd_ack, .sd_buff_wr, .sd_buff_dout,
-    .vblank, .in0, .in1, .in2, .in3, .sensor, .cabinet_info, .aud_l, .aud_r, .control(), .nv_wr,
+    .img_mounted, .img_size, .sd_lba(b_sd_lba), .sd_blk_cnt(b_sd_blk_cnt), .sd_rd(b_sd_rd),
+    .sd_ack(POPN ? {1'b0, sd_ack[0]} : sd_ack), .sd_buff_wr, .sd_buff_dout,
+    .vblank, .in0, .in1, .in2, .in3, .sensor, .cabinet_info,
+    .dp_cs, .dp_we, .dp_addr, .dp_wd, .dp_rd, .dp_irq,
+    .aud_l(b_aud_l), .aud_r(b_aud_r), .control(), .nv_wr,
     .dg_we, .dg_addr(ld_a[7:0]), .dg_data(ld_d),
     .rtc_nv_we, .rtc_nv_addr, .rtc_nv_wdata(ld_d), .rtc_nv_rdata,
     .rtc_set, .rtc_time,
@@ -326,22 +366,209 @@ assign c_we   = !hold && !x_own && b_c_we;
 assign c_addr = hold ? k_addr : x_own ? x_c_addr : b_c_addr;
 assign x_c_ack = c_ack && x_own && !hold;
 
-// the word port: the board's or the upload's, a request at a time, the upload first
-logic w_busy, w_own;                    // w_own: 1 the upload
+// ------------------------------------------------------------------------------------------
+// POPN: the SPU (rtl/spu/fb_spu68k.sv). Its program ROM and wave RAM are halfwords of the word
+// port. Its ATA bus has one drive, the data DVD on hps_io slot 1 (fb_atapi, fb_dvd_slot), whose
+// DMA writes wave RAM a word at a time (firebeat.cpp spu_dma_callback: bank + the DMA address,
+// which then counts on). The RF5C400 answers 0 for now.
+// ------------------------------------------------------------------------------------------
+
+logic        s_w_req, s_w_we, s_w_ack;
+logic        r_l_req, r_l_ack;              // the ROM cache's line fills (firebeat_sdram s)
+logic [26:4] r_l_addr;
+logic [127:0] r_l_rdata;
+logic [26:2] s_w_addr;
+logic [3:0]  s_w_be;
+logic [31:0] s_w_wdata;
+logic [31:0] v_sd_lba;
+logic [5:0]  v_sd_blk_cnt;
+logic        v_sd_rd;
+
+generate if (POPN) begin : g_spu
+logic        x_req, x_we, x_ack, x_ata, x_mem, x_rf, dev_ack;
+logic [1:0]  x_be;
+logic [2:0]  x_rgn;
+logic [24:1] x_addr;
+logic [15:0] x_wd, x_rd;
+logic [31:0] dma_addr;
+logic [1:0]  wave_bank;
+logic        ata_irq, ata_us;
+logic        dw_v, dw_ack;                  // a DMA word waiting for wave RAM
+logic [15:0] dw_d;
+
+fb_spu68k u_spu (
+    .clk, .rst(brd_reset),
+    .x_req, .x_we, .x_be, .x_rgn, .x_addr, .x_wd, .x_ack, .x_rd,
+    .pp_cs(dp_cs), .pp_we(dp_we), .pp_addr(dp_addr), .pp_wd(dp_wd), .pp_rd(dp_rd), .ppc_irq(dp_irq),
+    .ata_irq, .dsw(8'hFF), .leds(), .dma_addr, .dma_inc(dw_ack), .wave_bank,
+    .tr_valid(), .tr_info(), .tr_data()
+);
+
+// x_rgn 0 the ROM (writes dropped), 1 the wave RAM, 2 and 3 the ATA's chip selects, 4 the RF5C400
+logic x_rom;
+assign x_rom = x_rgn == 3'd0 && !x_we;
+assign x_mem = x_rgn == 3'd1;
+assign x_ata = x_rgn == 3'd2 || x_rgn == 3'd3;
+assign x_rf  = x_rgn == 3'd4;
+
+// the program ROM through a cache of 512 16-byte lines, direct mapped: index ROM address [12:4],
+// tag [18:13]. The ROM changes only with a download, which holds brd_reset; the valid bits are
+// swept clear while it is held (zero at configuration).
+logic [127:0] rc_data [512];
+logic [6:0]   rc_tag [512];                 // { valid, tag }
+logic [127:0] rc_q;
+logic [6:0]   rc_tq;
+logic [8:0]   rc_sweep;
+logic [1:0]   rc_st;                        // 0 idle, 1 look, 2 fill
+logic         rc_ack;
+logic [15:0]  rc_hw;
+wire  [8:0]   rc_i = x_addr[12:4];
+function automatic logic [15:0] line_hw(input logic [127:0] l, input logic [2:0] h);
+    logic [31:0] w;
+    w = l[32 * h[2:1] +: 32];
+    return h[0] ? w[15:0] : w[31:16];
+endfunction
+always_ff @(posedge clk) begin
+    rc_q <= rc_data[rc_i];
+    rc_tq <= rc_tag[rc_i];
+    if (brd_reset) begin rc_tag[rc_sweep] <= 7'd0; rc_sweep <= rc_sweep + 9'd1; end
+    else if (r_l_ack) begin rc_data[rc_i] <= r_l_rdata; rc_tag[rc_i] <= {1'b1, x_addr[18:13]}; end
+end
+always_ff @(posedge clk) begin
+    rc_ack <= 1'b0;
+    case (rc_st)
+    2'd0: if (x_req && x_rom && !rc_ack) rc_st <= 2'd1;
+    2'd1: if (rc_tq == {1'b1, x_addr[18:13]}) begin
+              rc_ack <= 1'b1; rc_hw <= line_hw(rc_q, x_addr[3:1]); rc_st <= 2'd0;
+          end else begin r_l_req <= 1'b1; r_l_addr <= {SPU_BASE[26:19], x_addr[18:4]}; rc_st <= 2'd2; end
+    default: if (r_l_ack) begin
+              r_l_req <= 1'b0; rc_ack <= 1'b1; rc_hw <= line_hw(r_l_rdata, x_addr[3:1]); rc_st <= 2'd0;
+          end
+    endcase
+    if (brd_reset) begin rc_st <= 2'd0; r_l_req <= 1'b0; end
+end
+
+// the drive: a strobe (a register access or a DMA word), its answer the clock after, then a
+// clock free, so strobes are three clocks apart; a pending register access goes first
+logic        a_acc, a_dma, a_q, a_dq, a_ack, a_resp, dmarq;
+logic [15:0] a_rd, a_q_rd;
+wire         a_free = !a_acc && !a_dma && !a_q && !a_dq;
+always_ff @(posedge clk) begin
+    a_acc <= a_free && x_req && x_ata && !a_ack;
+    a_dma <= a_free && !(x_req && x_ata && !a_ack) && dmarq && !dw_v && !dw_ack;
+    a_q <= a_acc;
+    a_dq <= a_dma;
+    a_ack <= a_q;
+    if (a_q) a_q_rd <= a_resp ? a_rd : 16'hFFFF;
+    if (a_dq) begin dw_v <= 1'b1; dw_d <= a_rd; end
+    if (dw_ack) dw_v <= 1'b0;
+    if (brd_reset) begin a_acc <= 1'b0; a_dma <= 1'b0; a_q <= 1'b0; a_dq <= 1'b0; a_ack <= 1'b0; dw_v <= 1'b0; end
+end
+
+logic        rq, rq_done, bw_we, have, dnew;
+logic [31:0] rq_lba, toc_start;
+logic [9:0]  bw_a;
+logic [15:0] bw_d;
+logic [6:0]  ntrk, toc_a;
+
+fb_atapi #(.CSEL(1'b0)) u_drv (
+    .clk, .reset(brd_reset), .tick_us(ata_us),
+    .acc(a_acc), .we(x_we), .cs1(x_rgn == 3'd3), .off(x_addr[3:1]), .wd(x_wd), .resp(a_resp), .rd(a_rd),
+    .dma_acc(a_dma), .dmarq,
+    .irq_o(ata_irq), .dasp_o(), .pdiag_o(), .dasp_i(1'b0), .pdiag_i(1'b0),
+    .have_disc(have), .disc_new(dnew), .ntrk, .toc_a, .toc_start, .toc_audio(1'b0), .toc_ctl(4'h4),
+    .rq, .rq_lba, .rq_half(), .rq_done, .bw_we, .bw_a, .bw_d,
+    .play_on(), .play_lba(), .play_smp(), .play_tick(), .vol0(), .vol1(),
+    .check(), .check_key(), .st_a(7'd0), .st_d(), .st_we(1'b0), .st_wd(32'd0), .bad()
+);
+
+fb_dvd_slot u_dvd (
+    .clk, .reset(!pll_locked), .brd_reset,
+    .mounted(img_mounted[1]), .img_size,
+    .sd_lba(v_sd_lba), .sd_blk_cnt(v_sd_blk_cnt), .sd_rd(v_sd_rd), .sd_ack(sd_ack[1]),
+    .sd_buff_wr, .sd_buff_dout,
+    .have_disc(have), .disc_new(dnew), .ntrk, .toc_a, .toc_start,
+    .rq, .rq_lba, .rq_done, .bw_we, .bw_a, .bw_d
+);
+
+// the drive's microsecond: 66.667 clocks, 66, 67, 67
+logic [6:0] us_n;
+logic [1:0] us_ph;
+always_ff @(posedge clk) begin
+    ata_us <= 1'b0;
+    if (us_n == ((us_ph == 2'd0) ? 7'd65 : 7'd66)) begin
+        us_n <= 7'd0; ata_us <= 1'b1; us_ph <= (us_ph == 2'd2) ? 2'd0 : us_ph + 2'd1;
+    end else us_n <= us_n + 7'd1;
+    if (brd_reset) begin us_n <= '0; us_ph <= '0; end
+end
+
+// the RF5C400: the 68000's 400000-400FFF, its samples from the wave RAM's 16M words
+logic        rf_ack, rf_mreq, rf_mwe, rf_mack;
+logic [15:0] rf_rd, rf_mwd;
+logic [23:0] rf_maddr;
+fb_rf5c400 u_rf (
+    .clk, .reset(brd_reset),
+    .req(x_req && x_rf), .we(x_we), .addr(x_addr[11:1]), .wd(x_wd), .ack(rf_ack), .rd(rf_rd),
+    .m_req(rf_mreq), .m_we(rf_mwe), .m_addr(rf_maddr), .m_wd(rf_mwd), .m_ack(rf_mack),
+    .m_rd(rf_maddr[0] ? w_rdata[15:0] : w_rdata[31:16]),
+    .out_l(aud_l), .out_r(aud_r), .sample()
+);
+
+// the word port: the RF5C400's sample (32 words a 44.1 kHz sample at most, the one deadline),
+// a DMA word or the 68000's wave RAM access, one at a time in that order
+localparam logic [1:0] SW_CPU = 2'd0, SW_DMA = 2'd1, SW_RF = 2'd2;
+logic        sw_busy;
+logic [1:0]  sw_src;
+wire  [23:0] dw_word = {wave_bank, 22'd0} + dma_addr[23:0];
+always_ff @(posedge clk) begin
+    if (!sw_busy) begin
+        if (rf_mreq)             begin sw_busy <= 1'b1; sw_src <= SW_RF;  end
+        else if (dw_v && !dw_ack) begin sw_busy <= 1'b1; sw_src <= SW_DMA; end
+        else if (x_req && x_mem) begin sw_busy <= 1'b1; sw_src <= SW_CPU; end
+    end else if (s_w_ack) sw_busy <= 1'b0;
+    if (brd_reset) sw_busy <= 1'b0;
+end
+wire  [23:0] sw_word = sw_src == SW_DMA ? dw_word : rf_maddr;
+assign dw_ack    = s_w_ack && sw_src == SW_DMA;
+assign rf_mack   = s_w_ack && sw_src == SW_RF;
+assign s_w_req   = sw_busy && (sw_src == SW_DMA ? dw_v : sw_src == SW_RF ? rf_mreq : x_req);
+assign s_w_we    = sw_src == SW_DMA || (sw_src == SW_RF ? rf_mwe : x_we);
+assign s_w_addr  = sw_src == SW_CPU ? {2'b10, x_addr[24:2]} : {2'b10, sw_word[23:1]};
+assign s_w_be    = sw_src == SW_CPU ? (x_addr[1] ? {2'b00, x_be} : {x_be, 2'b00}) :
+                   sw_word[0] ? 4'b0011 : 4'b1100;
+assign s_w_wdata = sw_src == SW_DMA ? {dw_d, dw_d} : sw_src == SW_RF ? {rf_mwd, rf_mwd} : {x_wd, x_wd};
+
+// the rest: ROM writes, answered the clock after
+always_ff @(posedge clk) dev_ack <= x_req && !x_rom && !x_mem && !x_ata && !x_rf && !dev_ack;
+assign x_ack = (s_w_ack && sw_src == SW_CPU) || a_ack || dev_ack || rc_ack || rf_ack;
+assign x_rd  = rc_ack ? rc_hw : a_ack ? a_q_rd : rf_ack ? rf_rd : dev_ack ? 16'h0000 :
+               x_addr[1] ? w_rdata[15:0] : w_rdata[31:16];
+end else begin : g_no_spu
+assign {s_w_req, s_w_we, s_w_addr, s_w_be, s_w_wdata, dp_rd, dp_irq, v_sd_lba, v_sd_blk_cnt, v_sd_rd,
+        r_l_req, r_l_addr} = '0;
+assign aud_l = b_aud_l;
+assign aud_r = b_aud_r;
+end endgenerate
+
+// the word port: the upload's, the board's or the SPU's, a request at a time in that order
+logic       w_busy;
+logic [1:0] w_own;                      // 0 the board, 1 the upload, 2 the SPU
 always_ff @(posedge clk) begin
     if (!w_busy) begin
-        if (u_w_req) begin w_busy <= 1'b1; w_own <= 1'b1; end
-        else if (b_w_req) begin w_busy <= 1'b1; w_own <= 1'b0; end
+        if (u_w_req) begin w_busy <= 1'b1; w_own <= 2'd1; end
+        else if (b_w_req) begin w_busy <= 1'b1; w_own <= 2'd0; end
+        else if (s_w_req) begin w_busy <= 1'b1; w_own <= 2'd2; end
     end else if (w_ack) w_busy <= 1'b0;
     if (!pll_locked) w_busy <= 1'b0;
 end
-assign w_req   = w_busy && (w_own ? u_w_req : b_w_req);
-assign w_we    = !w_own && b_w_we;
-assign w_addr  = w_own ? u_w_addr : b_w_addr;
-assign w_be    = w_own ? 4'hF : b_w_be;
-assign w_wdata = b_w_wdata;
-assign b_w_ack = w_ack && w_busy && !w_own;
-assign u_w_ack = w_ack && w_busy && w_own;
+assign w_req   = w_busy && (w_own == 2'd1 ? u_w_req : w_own == 2'd2 ? s_w_req : b_w_req);
+assign w_we    = w_own == 2'd0 ? b_w_we : w_own == 2'd2 && s_w_we;
+assign w_addr  = w_own == 2'd1 ? u_w_addr : w_own == 2'd2 ? s_w_addr : b_w_addr;
+assign w_be    = w_own == 2'd1 ? 4'hF : w_own == 2'd2 ? s_w_be : b_w_be;
+assign w_wdata = w_own == 2'd2 ? s_w_wdata : b_w_wdata;
+assign b_w_ack = w_ack && w_busy && w_own == 2'd0;
+assign u_w_ack = w_ack && w_busy && w_own == 2'd1;
+assign s_w_ack = w_ack && w_busy && w_own == 2'd2;
 assign u_w_rdata = w_rdata;
 
 // ------------------------------------------------------------------------------------------
@@ -355,6 +582,7 @@ firebeat_sdram u_sdram (
     .c_req, .c_we, .c_addr, .c_wdata, .c_ack, .c_rdata,
     .m_req, .m_addr, .m_ack, .m_rdata,
     .w_req, .w_we, .w_addr, .w_be, .w_wdata, .w_ack, .w_rdata,
+    .s_req(r_l_req), .s_addr(r_l_addr), .s_ack(r_l_ack), .s_rdata(r_l_rdata),
     .d_we, .d_addr, .d_din, .d_ready
 );
 

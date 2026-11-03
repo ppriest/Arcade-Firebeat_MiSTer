@@ -266,8 +266,14 @@ and the SPU board (F:1183-1231, F:1519-1539):
 | inputs: 9 buttons, coin, test, service | `popn` ports F:2173-2198 | the J1 line rebuilt per family |
 
 Shape: a separate revision, `Firebeat_popn`, chosen by the `.mra`'s `<rbf>`. It leaves out the
-YMZ280B, the second CD drive and CD audio, and the sensor bars (~6,400 ALMs at `0202c3d`:
-`fb_ymz280b` 1,824, the second `fb_atapi` and `fb_cd_slot` ~4,600) and adds the SPU.
+YMZ280B and the sensor bars, and the second CD drive's disc slot and CD audio; the drive stays,
+empty, as MAME's `ata:1` (firebeat() F:748, kept by firebeat_popn). hps_io slot 1 is the SPU's DVD.
+
+Status: steps 2 to 4 in RTL (`25df768` and after); step 3's bench not run (the user's call, to
+wire first). Step 4's bench, `sim/rf5c_tb`: a Python port of MAME's RF5C400 matches MAME's
+44.1 kHz .wav exactly on popn4's three attract tunes, and the RTL matches the port on 3 x 132,300
+samples. The DVD CHD service checked on the host against `chdman extractraw` (two ranges of
+gq986jaa02, 0 bytes differ).
 
 Steps, each with its bench before hardware:
 
@@ -280,6 +286,25 @@ Steps, each with its bench before hardware:
 5. On the board: popn4 to its attract mode, then the other sets.
 
 Sets: popn4 first (`gq986jaa01`, `gq986jaa02` on hand), then popn5-8, popnanm, popnanm2, popnmt.
+
+`.mra`s for all of them in `releases/_dev/`, written by `scripts/gen_mra.py`; all are
+`firebeat_popn` with the same BIOS (`a02jaa03.21e`) and SPU program (`a02jaa04.3q`).
+
+| Set | Program CD | Data DVD | Status |
+|-|-|-|-|
+| popn4 | `gq986jaa01` | `gq986jaa02` | boots and plays on the board |
+| popn5 | `a04jaa01` | `a04jaa02` | untested |
+| popn6 | `gqa16jaa01` | `gqa16jaa02` | untested; dongle a bad dump in MAME (192 bytes) |
+| popn7 | `b00jab01` | `b00jaa02` | untested |
+| popn8 | `gqb30jaa01` | `gqb30jaa02` | untested |
+| popnanm | `gq987jaa01` | `gq987jaa02` | untested |
+| popnanma | `gq987jaa01` | `gq987jaa02` | untested; clone of popnanm |
+| popnanm2 | `a02jac01` | `gea02jaa02` | untested |
+| popnanm2a | `a02jac01` | `gea02jaa02` | untested; clone of popnanm2 |
+| popnanm2ja | `a02jaa01` | `gea02jaa02` | untested; clone of popnanm2 |
+| popnanm2jaa | `a02jaa01` | `gea02jaa02` | untested; clone of popnanm2 |
+| popnmt | `976jaa01` | `976jaa02` | untested; rental cabinet (nibble 6, init_popn_rental) |
+| popnmt2 | `976jba01` | `976jaa02` | untested; clone of popnmt; rental cabinet |
 
 ## Memory plan (decided)
 

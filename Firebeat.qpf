@@ -1,6 +1,7 @@
 QUARTUS_VERSION = "17.0"
 # Firebeat_stp is the instrumented revision (ISSP probes, OSD debug page); Firebeat the release;
-# FirebeatCD the Phase 0 CD path test (rtl/cdtest).
+# FirebeatCD the Phase 0 CD path test (rtl/cdtest); Firebeat_popn the Pop'n Music board (FB_POPN).
 PROJECT_REVISION = "Firebeat_stp"
 PROJECT_REVISION = "FirebeatCD"
+PROJECT_REVISION = "Firebeat_popn"
 PROJECT_REVISION = "Firebeat"

@@ -21,8 +21,15 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_atapi.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_cd_slot.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_ata.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_dump.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68kAlu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/uaddrPla.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/spu/fb_spu68k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/spu/fb_dvd_slot.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/spu/fb_rf5c400.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_board.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/firebeat_sys.sv
 set_global_assignment -name SDC_FILE Firebeat.sdc
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mame_keys.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/psx_pad_snac.sv
 set_global_assignment -name SYSTEMVERILOG_FILE Firebeat.sv

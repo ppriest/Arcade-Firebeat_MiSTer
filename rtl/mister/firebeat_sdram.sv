@@ -8,9 +8,10 @@
 //   m  the PPC's DMA controller: a 32-byte block read (the controller's quad read, 16 halfwords
 //      from one row activation; the game's transfers run tens of words)
 //   w  one 32-bit word with byte enables: the flash model, the YMZ280B's samples, the NVRAM save
+//   s  a 16-byte line read: the SPU's program ROM cache (Pop'n Music)
 //   d  the download, a halfword at a time (load time), on the controller's port 2
 //
-// One transaction is in the controller at a time, chosen w, then c, then m: the controller works
+// One transaction is in the controller at a time, chosen w, then s, then c, then m: the controller works
 // on one at a time anyway, and a read can then never overtake a write to the same line. A line
 // read is one double read (8 halfwords from one row activation) on the controller's port 0, a
 // block read one quad read (16); a line write four two-halfword writes on port 1; a word read
@@ -62,6 +63,11 @@ module firebeat_sdram (
     input  logic [31:0]  w_wdata,
     output logic         w_ack,
     output logic [31:0]  w_rdata,
+
+    input  logic         s_req,
+    input  logic [26:4]  s_addr,
+    output logic         s_ack,
+    output logic [127:0] s_rdata,
 
     input  logic         d_we,
     input  logic [26:1]  d_addr,
@@ -128,7 +134,7 @@ end
 
 typedef enum logic [2:0] { S_IDLE, S_READ, S_WRITE, S_WWORD, S_DONE } s_t;
 s_t          st;
-logic [1:0]  who;                       // 0 w, 1 c, 2 m
+logic [1:0]  who;                       // 0 w, 1 c, 2 m, 3 s
 logic [26:4] line;                      // for m, the block's first line
 logic [1:0]  wk;                        // the word of the line being written / read for w
 logic [127:0] wbuf;
@@ -151,7 +157,7 @@ task automatic issue_word(input logic [1:0] k, input logic [31:0] d, input logic
 endtask
 
 always_ff @(posedge clk) begin
-    c_ack <= 1'b0; m_ack <= 1'b0; w_ack <= 1'b0;
+    c_ack <= 1'b0; m_ack <= 1'b0; w_ack <= 1'b0; s_ack <= 1'b0;
     case (st)
     S_IDLE:
         if (w_req) begin
@@ -161,6 +167,9 @@ always_ff @(posedge clk) begin
             end else begin
                 m_addr0 <= {w_addr[26:4], 3'b000}; m_quad0 <= 1'b0; m_req0 <= !m_req0; st <= S_READ;
             end
+        end else if (s_req) begin
+            who <= 2'd3; line <= s_addr;
+            m_addr0 <= {s_addr, 3'b000}; m_quad0 <= 1'b0; m_req0 <= !m_req0; st <= S_READ;
         end else if (c_req) begin
             who <= 2'd1; line <= c_addr;
             if (c_we) begin
@@ -177,6 +186,7 @@ always_ff @(posedge clk) begin
             case (who)
             2'd0: begin w_ack <= 1'b1; w_rdata <= line_rd[32 * wk +: 32]; end
             2'd1: begin c_ack <= 1'b1; c_rdata <= line_rd; end
+            2'd3: begin s_ack <= 1'b1; s_rdata <= line_rd; end
             default: begin m_ack <= 1'b1; m_rdata <= block_rd; end
             endcase
             st <= S_DONE;
@@ -208,7 +218,7 @@ always_ff @(posedge clk) begin
 end
 
 initial begin
-    st = S_IDLE; c_ack = 1'b0; m_ack = 1'b0; w_ack = 1'b0;
+    st = S_IDLE; c_ack = 1'b0; m_ack = 1'b0; w_ack = 1'b0; s_ack = 1'b0;
 end
 
 endmodule

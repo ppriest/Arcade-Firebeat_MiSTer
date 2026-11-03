@@ -7,8 +7,13 @@
 // as cs0_swap_r/w and cs1_swap_r/w do. A write reaches both drives; a read is answered by the drive
 // that responds, else 0xFFFF (m_default_data). IRQ is either drive's. The drives see each other's
 // DASP and PDIAG.
+//
+// NO_DISC1 (Pop'n Music): the slave drive is there with no disc and no image slot (firebeat_popn
+// keeps firebeat's ata:1 CD-ROM, empty); hps_io slot 1 is the SPU's.
 
-module fb_ata (
+module fb_ata #(
+    parameter bit NO_DISC1 = 1'b0
+) (
     input  logic        clk,
     input  logic        reset,
     input  logic        por,            // power-on: the slots' discs survive a board reset
@@ -88,7 +93,7 @@ genvar d;
 generate for (d = 0; d < 2; d++) begin : g_drv
     fb_atapi #(.CSEL(d[0])) u_drv (
         .clk, .reset, .tick_us,
-        .acc, .we, .cs1, .off, .wd(wdata), .resp(resp[d]), .rd(rd[d]),
+        .acc, .we, .cs1, .off, .wd(wdata), .resp(resp[d]), .rd(rd[d]), .dma_acc(1'b0), .dmarq(),
         .irq_o(irq_o[d]), .dasp_o(dasp_o[d]), .pdiag_o(pdiag_o[d]),
         .dasp_i(dasp_o[1 - d]), .pdiag_i(pdiag_o[1 - d]),
         .have_disc(have[d]), .disc_new(dnew[d]), .ntrk(ntrk[d]), .toc_a(toc_a[d]),
@@ -101,6 +106,7 @@ generate for (d = 0; d < 2; d++) begin : g_drv
         .st_a(st_a[6:0]), .st_d(st_dd[d]), .st_we(st_we && st_a[7] == d[0]), .st_wd,
         .bad(bad_d[d])
     );
+    if (d == 0 || !NO_DISC1) begin : g_slot
     fb_cd_slot u_slot (
         .clk, .reset(por), .brd_reset(reset),
         .mounted(img_mounted[d]), .img_size,
@@ -113,6 +119,10 @@ generate for (d = 0; d < 2; d++) begin : g_drv
         .play_on(play_on[d]), .play_lba(play_lba[d]), .play_smp(play_smp[d]), .play_tick(play_tick[d]),
         .vol0(vol0[d]), .vol1(vol1[d]), .cd_l(dl[d]), .cd_r(dr[d])
     );
+    end else begin : g_no_slot
+    assign {have[d], dnew[d], ntrk[d], toc_start[d], toc_audio[d], toc_ctl[d], rq_done[d], bw_we[d],
+            bw_a[d], bw_d[d], dl[d], dr[d], sd_lba[d], sd_blk_cnt[d], sd_rd[d]} = '0;
+    end
 end endgenerate
 
 function automatic logic signed [15:0] sat_add(input logic signed [15:0] a, b);

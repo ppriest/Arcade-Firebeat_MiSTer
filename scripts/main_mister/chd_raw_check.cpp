@@ -4,9 +4,11 @@
 // firebeat_mount_hook, read the whole raw image through firebeat_sd_service in 16 KB requests as
 // the core does, and compare every byte of its frames with the .bin `chdman extractcd` wrote for
 // the same CHD; then print the TOC block that follows them (rtl/board/fb_cd_slot.sv's format).
+// A DVD CHD (served as its sectors, no TOC block) is compared with `chdman extractraw` output,
+// which may be a range of the disc starting at byte START.
 // The SPI, file and core-name functions Main provides on the MiSTer are stubbed here.
 //
-//     scripts/main_mister/chd_raw_check.sh <file.chd> <file.bin>
+//     scripts/main_mister/chd_raw_check.sh <file.chd> <file.bin> [START]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,7 +36,8 @@ void spi_block_write(const uint8_t *addr, int, int sz) { memcpy(captured, addr, 
 
 int main(int argc, char **argv)
 {
-	if (argc != 3) { fprintf(stderr, "usage: %s file.chd file.bin\n", argv[0]); return 2; }
+	if (argc != 3 && argc != 4) { fprintf(stderr, "usage: %s file.chd file.bin [start]\n", argv[0]); return 2; }
+	long long start = argc == 4 ? atoll(argv[3]) : 0;
 	FILE *bin = fopen(argv[2], "rb");
 	if (!bin) { perror(argv[2]); return 2; }
 	fseek(bin, 0, SEEK_END);
@@ -45,7 +48,9 @@ int main(int argc, char **argv)
 	int writable = 1;
 	if (!firebeat_mount_hook(0, argv[1], &f, &writable)) { fprintf(stderr, "mount refused\n"); return 1; }
 	long long data_bytes = ((bin_size + 511) / 512) * 512;
-	printf("served size %lld: .bin %lld, padded %lld, TOC 1024\n", (long long)f.size, bin_size, data_bytes);
+	bool dvd = f.size % 2048 == 0 && f.size != data_bytes + 1024;
+	if (dvd) printf("served size %lld: a DVD, compared from byte %lld\n", (long long)f.size, start);
+	else printf("served size %lld: .bin %lld, padded %lld, TOC 1024\n", (long long)f.size, bin_size, data_bytes);
 
 	static uint8_t ref[16384];
 	long long bad_bytes = 0, first_bad = -1;
@@ -55,10 +60,16 @@ int main(int argc, char **argv)
 		int nblk = (int)((blocks - lba) < 32 ? (blocks - lba) : 32);
 		int sz = nblk * 512;
 		captured_sz = 0;
-		if (firebeat_sd_service(0, 1, lba, sz, 0) != 1 || captured_sz != sz) { fprintf(stderr, "service failed at %llu\n", (unsigned long long)lba); return 1; }
+		if (firebeat_sd_service(0, 1, lba + start / 512, sz, 0) != 1 || captured_sz != sz) { fprintf(stderr, "service failed at %llu\n", (unsigned long long)lba); return 1; }
 		if (fread(ref, 1, sz, bin) != (size_t)sz) { fprintf(stderr, "short .bin read\n"); return 1; }
 		for (int i = 0; i < sz; i++)
 			if (captured[i] != ref[i]) { if (first_bad < 0) first_bad = (long long)lba * 512 + i; bad_bytes++; }
+	}
+	if (dvd)
+	{
+		firebeat_unmount(0);
+		printf("compared %llu bytes: %lld differ, first at %lld\n", (unsigned long long)blocks * 512, bad_bytes, first_bad);
+		return bad_bytes == 0 ? 0 : 1;
 	}
 	captured_sz = 0;
 	if (firebeat_sd_service(0, 1, (uint64_t)data_bytes / 512, 1024, 0) != 1 || captured_sz != 1024) { fprintf(stderr, "TOC read failed\n"); return 1; }

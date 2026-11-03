@@ -21,6 +21,13 @@ rtl/board/fb_cd_slot.sv
 rtl/board/fb_ata.sv
 rtl/board/fb_dump.sv
 rtl/board/fb_board.sv
+rtl/cpu/fx68k/fx68k.sv
+rtl/cpu/fx68k/fx68kAlu.sv
+rtl/cpu/fx68k/uaddrPla.sv
+rtl/spu/fb_spu68k.sv
+rtl/spu/fb_dvd_slot.sv
+rtl/spu/fb_rf5c400.sv
++incdir+rtl/spu
 rtl/firebeat_sys.sv
 sim/common/sdram_chip_model_wide.sv
 sim/common/sdram_chip_model_128.sv

@@ -35,7 +35,10 @@ and nothing else; `-listxml` says `status=imperfect emulation=good sound=imperfe
 Every set also loads a 0xC8-byte dongle image (`user2`; 0xC0 and BAD_DUMP for bm36th, bm37th,
 popn6, ppd, ppp1mp) and, where there is an SPU, a 0x1038-byte RTC preset (`rtc`, "default unlocked
 RTC", one per set). The flash chips are not in any ROM list: their contents are written by the
-game's own install from the CD (below, "Flash").
+game's own install from the CD (below, "Flash"). The popn revision loads the preset with the ROMs
+(`053283b`); before that a first boot had an empty RTC, E165 RTC DATA ERROR, then a "system recovery
+mode" asking for a password (on the board, reported by the user). A recovery password can be
+computed from the RTC's contents with https://987123879113.github.io/firebeatrtc/ (not used yet).
 
 Region CRCs across sets: four BIOS images, three SPU programs, one dongle and one RTC preset per
 set. Nothing to share beyond the family.
@@ -340,6 +343,35 @@ bits noted there). Per family:
 
 Outputs (status LEDs, button LEDs, pillar lamps, stage LEDs) are decoded per family
 (F:1120-1146, 1566-1612, 1663-1736, 1960-1975); MiSTer has nowhere to show them.
+
+## Home controllers
+
+**Pop'n Music (PlayStation).** A controller-port pad: it answers the standard poll (`01 42 00 00
+00`) with a digital pad's reply and holds Left, Down and Right pressed, which games take as the
+Pop'n controller (PSX_MiSTer `rtl/joypad_pad.vhd` around line 699, its "Pop'n" pad type, forces
+those three bits; commit `cd17b5a`). `rtl/mister/psx_pad_snac.sv` polls it on the user port in the
+Firebeat_popn revision. Its buttons in the reply, bytes counted from 1 (byte 4: Select L3 R3 Start
+Up Right Down Left, byte 5: L2 R2 L1 R1 Triangle Circle Cross Square, bits 0-7, active low;
+`joypad_pad.vhd` lines 690-697, 746-753):
+
+| Button | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|
+| Pad button | Triangle | Circle | R1 | Cross | L1 | Square | R2 | Up | L2 |
+| Byte, bit | 5, 4 | 5, 5 | 5, 3 | 5, 6 | 5, 2 | 5, 7 | 5, 1 | 4, 4 | 5, 0 |
+
+Source: the README of `Curfewshino/PicoPS2PopN` (a PS2 Pop'n controller to USB converter), read
+only as a search excerpt. `popn.ecxol.net` (a home-made controller) agrees on 4 (left blue, Cross)
+and 6 (right blue, Square). Unverified: the other seven, Start and Select, and whether the PS1 and
+PS2 controllers report alike. The check on the board is the game's test-mode input screen, one
+button at a time, with OSD "Pop'n controller" on SNAC.
+
+**ParaParaParadise (PS2).** A USB HID device, VID 0507 PID 0011, not a controller-port pad, so SNAC
+cannot reach it. It reports nothing until it is sent output report `00 03`
+(`Tatsh/pppps2pc` `kernel/hid-konami-ppp.c` and `pppps2pc/constants.py`, commit `6d912b5`; the game
+disc's `DRIVER/USBKB.IRX`, decompiled there, probes 1287/17 and reads it with
+`sceUsbdInterruptTransfer`). The Firebeat Main (`ppriest/Main_MiSTer` branch `firebeat-chd`,
+`be2d2c3`) sends it on attach; the sensors then map to Sensor 1-5 like any pad. Unverified on the
+board with the controller.
 
 ## Existing RTL, searched
 
@@ -924,7 +956,52 @@ attract load already spans the full 32 MB.
 Block RAM at `0202c3d`: 184 of 553 M10Ks, 1.17 of 5.66 Mbit; 369 blocks (4.49 Mbit) free. The
 68000's 256 KB RAM (2 Mbit) fits there; its 512 KB ROM does not fit beside it and goes to SDRAM.
 
-Not captured yet: the 68000's instruction trace (step 2's bench) and the PPC-side boot trace.
+### The two CPUs' traces, popn4 to frame 4,500
+
+`scripts/mame/systrace.lua` through `mame_run_lua`, fresh NVRAM, in `debug/popn4-68k/` and
+`debug/popn4-ppc/` (gitignored). `mame_sys_trace` cannot run popn4: MAME refuses the DVD CHD
+without a diff directory (`gq986jaa02.chd DIFF CHD ERROR`), which `mame_run_lua` gives it.
+
+68000 (`CORE_CPU=:audiocpu`): every write, reads of 200000-34000F, 400000-400FFF and
+800000-FFFFFF, autovector reads with SR's mask; 583 MB.
+
+| 68000 access | Count | First frame |
+|---|---|---|
+| RAM writes (100000-13FFFF) | 16,351,068 | |
+| wave RAM writes, then reads (via bank) | 786,432 each | 364, 419 |
+| RF5C400 writes / reads | 524,510 / 2 | 201 / 3912 |
+| dual-port RAM writes / reads | 278,522 / 10,448 | / 2929 |
+| IRQ acks | 146,468 | |
+| SPU ATA cs0 reads / writes | 212,759 / 1,420 | 1167 / 1094 |
+| LED writes | 9,044 | 200 |
+| wave-bank writes | 140 | 364 |
+| DMA address writes (low, high) | 64, 64 | 3821 |
+| DSW reads | 2 | 364 |
+
+Interrupts taken (autovector reads at the new mask): level 2 35,343 times (the 500 Hz timer,
+F:1394, or the ATA interrupt), level 4 271 (the dual-port RAM's 0x3FE, F:1194), level 6 354 (the
+timer while an ATA interrupt is pending, F:1392). Each vector 0x60-0x7F is also read twice at mask
+0. The wave RAM is written and read back over 786,432 words before the first ATA command: a RAM
+test, so the wave RAM path is exercised before the disc is.
+
+PPC (`CORE_WIO=70000000:7fffffff`: I/O writes only; work RAM writes are 8.1 million in the first
+600 frames): first ATA access at frame 1850, first dual-port RAM access at 2929. Its 35 million GCU
+writes were dropped from the kept file (`popn4_ppc_nogcu.trace`, 231 MB).
+
+### spu_tb: fb_spu's 68000 against the trace (Phase 8 step 2)
+
+`sim/spu_tb` at `9df2e50` and after: fx68k from reset with the ROM, RAM, the dual-port RAM, the
+500 Hz timer and the registers, MAME's accesses compared a stream per SR mask. RAM writes to the
+three stacks interrupts are taken on are left out (where an interrupt lands sets their PC, SR and
+depth).
+
+The first 508,574 compared accesses match, through the RAM test to MAME's first interrupt (frame
+202, 3.38 s of 68000 time). They then differ in a value the program computes from that timing:
+the level-2 handler stores the interrupted stack pointer into a task block at 10C65A (RTL 10DDCC,
+MAME 10DDB4) and switches to the stack at 13F7xx. The SPU program is a task-switching kernel, so
+its RAM follows where each timer interrupt lands, and an in-order comparison needs the interrupts
+taken at MAME's instruction: the bench driving IPL itself, from the PC and SR MAME pushed at each
+interrupt (in the trace), instead of the RTL's own timer.
 
 ## Feasibility
 

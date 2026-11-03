@@ -246,6 +246,7 @@ int main(int argc, char **argv) {
     std::vector<uint8_t> img(0x800C8), nv(NV_SIZE);
     for (auto &b : img) b = rng();
     for (auto &b : nv) b = rng();
+    nv[0x600001] = (nv[0x600001] & 0x8F) | 0x20;      // register A: the oscillator on (DV 010)
     uint64_t c0 = clocks;
     download(0, img);
     printf("image: %zu bytes in %llu clocks, %u KB counted\n", img.size(), (unsigned long long)(clocks - c0), t->dl_kb);
@@ -268,6 +269,35 @@ int main(int argc, char **argv) {
         if (up[a] != nv[a]) { if (ub < 5) fail("upload: byte %zx is %02X, expected %02X", a, up[a], nv[a]); ub++; }
     }
     printf("upload: %llu clocks, %d bytes differ\n", (unsigned long long)(clocks - c0), ub);
+
+    // 3b. an RTC never started (DV 000) is not loaded: the RTC keeps what it had
+    {
+        std::vector<uint8_t> nz(NV_SIZE);
+        for (size_t a = 0x600000; a < NV_SIZE; a++) nz[a] = rng();
+        nz[0x600001] &= 0x8F;
+        download(4, nz, 0, 0x600000);
+        std::vector<uint8_t> u2 = upload(4, NV_SIZE, 0, 0x600000);
+        int nb = 0;
+        for (size_t a = 0x600000; a < NV_SIZE; a++) nb += u2[a] != nv[a];
+        if (nb) fail("an RTC with DV 000 was loaded: %d bytes changed", nb);
+        printf("RTC with DV 000: %d bytes changed\n", nb);
+    }
+    // 3c. a short image (a file missing from the .mra) keeps the board in reset; the whole one
+    // releases it (read with hold dropped for one evaluation, no clock)
+    {
+        auto loaded = [&]() { t->hold = 0; t->eval(); bool r = !t->brd_reset; t->hold = 1; t->eval(); return r; };
+        std::vector<uint8_t> sh(img.begin(), img.begin() + 0x40000);
+        download(0, sh);
+        for (int i = 0; i < 100; i++) tick();
+        bool short_rel = loaded();
+        download(0, img);
+        for (int i = 0; i < 100; i++) tick();
+        bool whole_rel = loaded();
+        if (short_rel) fail("a short image released the board");
+        if (!whole_rel) fail("the whole image left the board in reset");
+        printf("short image: board %s; whole image: board %s\n", short_rel ? "released" : "held",
+               whole_rel ? "released" : "held");
+    }
 
     // 4. the picture: the first, written after reset, then the inverted one
     printf("picture:\n");

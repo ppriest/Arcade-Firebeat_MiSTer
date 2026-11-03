@@ -1,0 +1,35 @@
+<misterromdescription>
+    <name>Pop'n Music Animelo 2 (JAC)</name>
+    <setname>popnanm2</setname>
+    <rbf>Firebeat_popn</rbf>
+    <mameversion>0289</mameversion>
+    <year>2001</year>
+    <manufacturer>Konami</manufacturer>
+    <category>Rhythm</category>
+    <rotation>horizontal</rotation>
+
+    <!-- rtl/firebeat_sys.sv's download: the BIOS (ROM_LOAD16_WORD_SWAP), the SPU's program
+         (likewise) at 0x80000, the dongle at 0x100000, the RTC preset at 0x102000 (the NVRAM
+         file, loaded after, replaces it); written and checked by scripts/gen_mra.py. The discs go in the OSD's slots:
+         a02jac01.chd as the program CD, gea02jaa02.chd as the data DVD. -->
+    <rom index="0" zip="popnanm2.zip" md5="none">
+        <interleave output="16">
+            <part name="a02jaa03.21e" crc="43ecc093" map="12"/>
+        </interleave>
+        <interleave output="16">
+            <part name="a02jaa04.3q" crc="8c6000dd" map="12"/>
+        </interleave>
+        <part name="gca02ja_gca02jb_gea02ja_forever" crc="63b22ee0"/>
+        <part repeat="0x1f38">FF</part>
+        <part name="rtc" crc="90fcfeab"/>
+    </rom>
+    <!-- the cabinet register's nibble (firebeat.cpp cabinet_r; Firebeat.sv): 00 Japan (init_popn_jp) -->
+    <rom index="1">
+        <part>00</part>
+    </rom>
+    <!-- the three flash chips (6 MB) and the RTC (MAME's .nv, 4,152 bytes): the installed game and its
+         settings (rtl/firebeat_sys.sv, ioctl index 4) -->
+    <nvram index="4" size="6295608"/>
+    <!-- Firebeat.sv's J1 line: joystick bit 4 + i is name i -->
+    <buttons names="White 1,Yellow 1,Green 1,Blue 1,Red,Blue 2,Green 2,Yellow 2,White 2,Coin,Test,Service,Pause" count="1"/>
+</misterromdescription>

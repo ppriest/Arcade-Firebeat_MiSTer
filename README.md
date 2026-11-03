@@ -3,20 +3,22 @@
 A MiSTer FPGA core for Konami's Firebeat arcade hardware (MAME's `konami/firebeat.cpp`), built
 with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
-**Status: first release, `Arcade-Firebeat_20261101.rbf`. ParaParaParadise boots and plays on the board.**
+**Status: ParaParaParadise and Pop'n Music boot and play on the board. Released:
+`Arcade-Firebeat_20261101.rbf` (ParaParaParadise), `Arcade-Firebeat_popn_20261103.rbf` (Pop'n Music).**
 
 ## Contents
 
 - [History](#history)
 - [Games](#games)
-  - [Installation](#installation)
-  - [Supported](#supported)
+  - [Requirements](#requirements)
+  - [ParaParaParadise](#paraparaparadise)
+  - [Pop'n Music](#popn-music)
   - [Not yet](#not-yet)
+- [Peripherals](#peripherals)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
   - [Floorplan](#floorplan)
 - [Screenshots](#screenshots)
-- [Controls](#controls)
 - [Status](#status)
   - [Todo](#todo)
   - [Resource usage](#resource-usage)
@@ -28,27 +30,58 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 ## History
 
+**20261103**
+* Pop'n Music: `Arcade-Firebeat_popn_20261103.rbf`, popn4-8, Animelo, Animelo 2, Mickey Tunes and clones
+* `Firebeat_disc_slots.zip`: every set's discs mounted ahead of time
+
 **20261101**
 * First release - ParaParaParadise and clones only
 * **READ the docs**
 
 
 ## Games
-### Installation
+
+ParaParaParadise and Pop'n Music run on two revisions of the core: `Firebeat` (the main board) and
+`Firebeat_popn` (the main board plus Pop'n Music's SPU board: a 68000, an RF5C400 and a DVD drive).
+Each `.mra` names its revision.
+
+### Requirements
 
 A 128 MB SDRAM module is required.
 
+MAME's CHDs need `MiSTer_Firebeat`, a Main_MiSTer build with the Firebeat CHD service (branch
+`firebeat-chd`). Put it at `/media/fat/MiSTer_Firebeat` and add to `MiSTer.ini`:
+
+```
+[Firebeat*]
+main=MiSTer_Firebeat
+```
+
+Raw `.bin` images (from `chdman extractcd`) should work with the standard Main.
+
+`releases/Firebeat_disc_slots.zip`, unzipped at `/media/fat`, puts every set's two discs in its OSD
+slots ahead of time (`config/<set>.s0` and `.s1`, Main's remembered mounts, pointing at the folders
+below), so a set boots without mounting anything. `scripts/gen_slots.py` writes it.
+
+Every file the `.mra` names must be in the ROM zip: with one missing the core stays on a black
+screen, the board held in reset, rather than boot on whatever BIOS the last set left in memory.
+
+### ParaParaParadise
+
 #### 1. Core and .mra
 
-* Take the latest `*.rbf` from `releases/` and put it in `_Arcade/cores`, renamed to drop the
-  `Arcade-` prefix (`Arcade-Firebeat_YYYYMMDD.rbf` becomes `Firebeat_YYYYMMDD.rbf`). MiSTer launches
-  the highest-sorting match for `<rbf>Firebeat</rbf>`, and a `Firebeat_*.rbf` sorts above every
-  `Arcade-Firebeat_*.rbf`
+* Take the latest `Arcade-Firebeat_*.rbf` from `releases/` and put it in `_Arcade/cores`, renamed
+  to drop the `Arcade-` prefix (`Arcade-Firebeat_YYYYMMDD.rbf` becomes `Firebeat_YYYYMMDD.rbf`).
+  MiSTer launches the highest-sorting match for `<rbf>Firebeat</rbf>`, and a `Firebeat_*.rbf` sorts
+  above every `Arcade-Firebeat_*.rbf`
 * Take the `*.mra` files and the `_alternatives` folder from `releases/` and put them in `_Arcade`
   (or a subdirectory starting with an underscore, e.g. `_Arcade/_Firebeat`)
-* Put the MAME ROM sets (`ppp.zip`, `ppp11.zip`, ...; merged or split) in `games/mame`
 
-#### 2. Discs
+#### 2. ROMs
+
+The MAME sets (`ppp.zip`, `ppp11.zip`, ...; merged or split) in `games/mame`.
+
+#### 3. Discs
 
 Each set's two discs go in a folder named after the set, under `games/`, with MAME's file names:
 
@@ -62,21 +95,14 @@ Each set's two discs go in a folder named after the set, under `games/`, with MA
 Mount both from the OSD after loading the game: **Program CD** the `...01` disc, **Audio CD** the
 `...02` disc.
 
+**ATAPI: NG, ERROR 140: ATAPI INIT ERROR** at the BIOS's check means no Program CD was
+mounted: mount it, then reset (OSD, "Reset and close OSD").
+
 e.g. for ParaParaParadise
 
 ![PXL_20261101_223430733.jpg](docs/setup/PXL_20261101_223430733.jpg)
 
-MAME's CHDs need `MiSTer_Firebeat`, a Main_MiSTer build with the Firebeat CHD service (branch
-`firebeat-chd`). Put it at `/media/fat/MiSTer_Firebeat` and add to `MiSTer.ini`:
-
-```
-[Firebeat*]
-main=MiSTer_Firebeat
-```
-
-Raw `.bin` images (from `chdman extractcd`) should work with the standard Main.
-
-#### 3. First boot: install from Test mode
+#### 4. First boot: install from Test mode
 
 On first boot it will stop at **E160 BACKUPRAM ERROR** and **E124 FLASH DATA ERROR**
 ![20261101_223513-screen.png](docs/setup/20261101_223513-screen.png)
@@ -102,10 +128,9 @@ Once, per game:
 
 The game then boots to its warning screen and attract mode.
 
+#### 5. Sets
 
-### Supported
-
-Sets with an `.mra` in `releases/` (ppp1mp, a clone of ppp, in `_alternatives/_ParaParaParadise`).
+Parents in `releases/`, ppp1mp (a clone of ppp) in `releases/_alternatives/_ParaParaParadise`.
 ppp11 and ppp1mp have run on the board.
 
 | Name | Year | Manufacturer | Discs | Notes |
@@ -115,13 +140,126 @@ ppp11 and ppp1mp have run on the board.
 | ParaParaParadise (`ppp`) | 2000 | Konami | `977jaa01`, `977jaa02` | program CD a bad dump in MAME |
 | ParaParaDancing (`ppd`) | 2000 | Konami | `977kaa01`, `977kaa02` | program CD a bad dump in MAME; sensor bars 6-8 not mapped |
 
+#### 6. Controls
+
+| Input | Use |
+|-|-|
+| D-pad or stick left, right | menu select |
+| Sensor 1-5 | the five sensor bars (hands over the bars) |
+| Start | Start / OK |
+| Coin, Test, Service | cabinet switches |
+| Pause | suspends the CPU |
+
+Keyboard, MAME's default keys: Left and Right on the arrows, sensors 1-5 on LCtrl LAlt Space
+LShift Z, Start 1, Coin 5; F2 Test, P pause. Controllers: [Peripherals](#peripherals).
+
+### Pop'n Music
+
+#### 1. Core and .mra
+
+* Take the latest `Arcade-Firebeat_popn_*.rbf` from `releases/` and put it in `_Arcade/cores`,
+  renamed to drop the `Arcade-` prefix (`Arcade-Firebeat_popn_YYYYMMDD.rbf` becomes
+  `Firebeat_popn_YYYYMMDD.rbf`). MiSTer launches the highest-sorting match for
+  `<rbf>Firebeat_popn</rbf>`
+* Take the `*.mra` files and the `_alternatives` folder from `releases/` and put them in `_Arcade`
+  (or a subdirectory starting with an underscore, e.g. `_Arcade/_Firebeat`)
+
+#### 2. ROMs
+
+The MAME sets (`popn4.zip`, `popn8.zip`, ...; merged or split) in `games/mame`. Each set's `.mra`
+also loads its RTC preset from the zip (MAME's "default unlocked RTC").
+
+#### 3. Discs
+
+Each set's two discs go in a folder named after the set, under `games/`, with MAME's file names:
+
+| Game | Folder | Program CD | Data DVD |
+|-|-|-|-|
+| Pop'n Music 4 | `games/popn4/` | `gq986jaa01.chd` | `gq986jaa02.chd` |
+| Pop'n Music 5 | `games/popn5/` | `a04jaa01.chd` | `a04jaa02.chd` |
+| Pop'n Music 6 | `games/popn6/` | `gqa16jaa01.chd` | `gqa16jaa02.chd` |
+| Pop'n Music 7 | `games/popn7/` | `b00jab01.chd` | `b00jaa02.chd` |
+| Pop'n Music 8 | `games/popn8/` | `gqb30jaa01.chd` | `gqb30jaa02.chd` |
+| Pop'n Music Animelo | `games/popnanm/` | `gq987jaa01.chd` | `gq987jaa02.chd` |
+| Pop'n Music Animelo 2 (JAC) | `games/popnanm2/` | `a02jac01.chd` | `gea02jaa02.chd` |
+| Pop'n Music Animelo 2 (JAA) | `games/popnanm2ja/` | `a02jaa01.chd` | `gea02jaa02.chd` |
+| Pop'n Music Mickey Tunes | `games/popnmt/` | `976jaa01.chd` | `976jaa02.chd` |
+| Pop'n Music Mickey Tunes! | `games/popnmt2/` | `976jba01.chd` | `976jaa02.chd` |
+
+The license-expired clones use the folder of the set with the same discs: `popnanma` popnanm's,
+`popnanm2a` popnanm2's, `popnanm2jaa` popnanm2ja's.
+
+Mount both from the OSD after loading the game: **Program CD** the `...01` disc, **Data DVD** the
+`...02` disc.
+
+**ATAPI: NG, ERROR 140: ATAPI INIT ERROR** at the BIOS's check means no Program CD was
+mounted: mount it, then reset (OSD, "Reset and close OSD").
+
+#### 4. First boot
+
+No install step: with the RTC preset loaded the game passes its boot check (SECURITY to FLUSH),
+loads the music data from the DVD and goes to attract mode.
+
+**RTC errors** (E165 RTC DATA ERROR, then a "system recovery mode" asking for a password): the
+saved NVRAM's RTC is bad, and the NVRAM file loads after the preset and replaces it. An RTC that
+was never started is ignored on load. Otherwise delete `/media/fat/config/nvram/<game>.nvm`; that
+also clears the game's settings. A recovery password can be computed from the RTC's contents with
+https://987123879113.github.io/firebeatrtc/.
+
+#### 5. Sets
+
+popn4 and popn8 have run on the board.
+
+| Name | Year | Manufacturer | Discs | Notes |
+|-|-|-|-|-|
+| Pop'n Music 4 (`popn4`) | 2000 | Konami | `gq986jaa01`, `gq986jaa02` | |
+| Pop'n Music 5 (`popn5`) | 2000 | Konami | `a04jaa01`, `a04jaa02` | |
+| Pop'n Music 6 (`popn6`) | 2001 | Konami | `gqa16jaa01`, `gqa16jaa02` | dongle a bad dump in MAME (192 bytes) |
+| Pop'n Music 7 (`popn7`) | 2001 | Konami | `b00jab01`, `b00jaa02` | |
+| Pop'n Music 8 (`popn8`) | 2002 | Konami | `gqb30jaa01`, `gqb30jaa02` | |
+| Pop'n Music Animelo (`popnanm`) | 2000 | Konami | `gq987jaa01`, `gq987jaa02` | |
+| Pop'n Music Animelo (license expired) (`popnanma`) | 2000 | Konami | `gq987jaa01`, `gq987jaa02` | clone of popnanm |
+| Pop'n Music Animelo 2 (JAC) (`popnanm2`) | 2001 | Konami | `a02jac01`, `gea02jaa02` | |
+| Pop'n Music Animelo 2 (JAC, license expired) (`popnanm2a`) | 2001 | Konami | `a02jac01`, `gea02jaa02` | clone of popnanm2 |
+| Pop'n Music Animelo 2 (JAA) (`popnanm2ja`) | 2001 | Konami | `a02jaa01`, `gea02jaa02` | clone of popnanm2 |
+| Pop'n Music Animelo 2 (JAA, license expired) (`popnanm2jaa`) | 2001 | Konami | `a02jaa01`, `gea02jaa02` | clone of popnanm2 |
+| Pop'n Music Mickey Tunes (`popnmt`) | 2000 | Konami | `976jaa01`, `976jaa02` | rental cabinet (nibble 6, init_popn_rental) |
+| Pop'n Music Mickey Tunes! (`popnmt2`) | 2000 | Konami | `976jba01`, `976jaa02` | clone of popnmt; rental cabinet |
+
+#### 6. Controls
+
+| Input | Use |
+|-|-|
+| Button 1-9 | the nine buttons, left to right: White 1, Yellow 1, Green 1, Blue 1, Red, Blue 2, Green 2, Yellow 2, White 2 |
+| Coin, Test, Service | cabinet switches |
+| Pause | suspends the CPU |
+
+Keyboard, MAME's default keys: buttons 1-9 on LCtrl LAlt Space LShift Z X C V B, Coin 5; F2 Test,
+P pause. Controllers: [Peripherals](#peripherals).
+
 ### Not yet
 
 | Name | Why |
 |-|-|
-| Pop'n Music 4-8, Animelo, Mickey Tunes | the SPU board (68000, RF5C400, 32 MB wave RAM, DVD-ROM): Phase 8, in progress |
 | beatmania III and its updates | SPU board plus a hard disk and floppy |
 | Keyboardmania and its updates | two GCUs on two screens, an XT446 synth |
+
+## Peripherals
+
+| Controller | Game | Connection | Set-up |
+|-|-|-|-|
+| USB pad, keyboard | both | USB | map from the OSD as for any core |
+| ParaParaParadise controller (PS2) | ParaParaParadise | USB | a USB HID device, not a controller-port pad. Needs `MiSTer_Firebeat` (above), which switches it on; map its sensors to Sensor 1-5 |
+| Pop'n Music controller (PlayStation) | Pop'n Music | USB adapter | map like any pad |
+| Pop'n Music controller (PlayStation) | Pop'n Music | user port, SNAC adapter (PSX core wiring) | OSD **Pop'n controller** to SNAC (Firebeat_popn only). Fixed map below; Select is Coin |
+
+The SNAC button map, from one published source and not yet checked on the board
+(`docs/HARDWARE_NOTES.md`, "Home controllers"); the game's Test mode input screen is the check:
+
+| Button | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|-|-|-|-|-|-|-|-|-|-|
+| Colour | White | Yellow | Green | Blue | Red | Blue | Green | Yellow | White |
+| Pad button | Triangle | Circle | R1 | Cross | L1 | Square | R2 | Up | L2 |
 
 ## Hardware
 
@@ -167,19 +305,6 @@ Not generated yet; it comes with the first release.
 `python scripts/build_staged.py`, then `python scripts/deploy.py` with a `mister.env` (see
 `scripts/deploy.py`).
 
-## Controls
-
-| Input | Use |
-|-|-|
-| D-pad or stick left, right | menu select |
-| Sensor 1-5 | the five sensor bars (hands over the bars) |
-| Start | Start / OK |
-| Coin, Test, Service | cabinet switches |
-| Pause | suspends the CPU |
-
-Keyboard, MAME's default keys: Left and Right on the arrows, sensors 1-5 on LCtrl LAlt Space
-LShift Z, Start 1, Coin 5; F2 Test, P pause.
-
 ## Status
 
 Known issues:
@@ -194,7 +319,7 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 ### Todo
 
 - [ ] Phase 6 standard features: DIPs, CRT Adjust, flip screen, audio mix
-- [ ] Pop'n Music (Phase 8)
+- [x] Pop'n Music release (`Firebeat_popn`)
 - [ ] Release: floorplan, Downloader database
 
 ### Resource usage
@@ -211,6 +336,20 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 | PLLs | 3 | 6 |
 
 Logic is the one to watch: 88% of ALMs; the build before it missed timing at four seeds.
+
+`Firebeat_popn` revision at `f10aed3` (the 20261103 release), fitter seed 7, every clock positive
+(`clk_sys` +0.848 ns, SDRAM +0.069 ns, HDMI +0.249 ns; hold +0.205 ns at worst):
+
+| resource | used | available |
+| --- | --- | --- |
+| Logic (ALMs) | 37,736 | 41,910 |
+| Block memory bits | 3,162,080 | 5,662,720 |
+| RAM blocks | 440 | 553 |
+| DSP blocks | 54 | 112 |
+| PLLs | 3 | 6 |
+
+90% of ALMs; placement is seed-sensitive at this fill (bd672b8 at seed 5 missed HDMI by
+0.146 ns).
 
 ## AI Attestation
 

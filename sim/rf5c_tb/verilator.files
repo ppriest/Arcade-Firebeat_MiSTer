@@ -1,0 +1,3 @@
+rtl/spu/fb_rf5c400.sv
++incdir+rtl/spu
+sim/rf5c_tb/tb_rf5c.sv
