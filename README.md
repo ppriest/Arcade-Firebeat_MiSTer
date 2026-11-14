@@ -12,10 +12,10 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
   - [Pop'n Music](#popn-music)
   - [Keyboardmania](#keyboardmania)
   - [Not yet](#not-yet)
+- [Screenshots](#screenshots)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
   - [Floorplan](#floorplan)
-- [Screenshots](#screenshots)
 - [Status](#status)
   - [Todo](#todo)
   - [Resource usage](#resource-usage)
@@ -322,6 +322,30 @@ player_2_controller=3434_D030
 |-|-|
 | beatmania III and its updates | SPU board plus a hard disk and floppy |
 
+## Screenshots
+
+### ParaParaParadise v1.1
+
+![20261030_213839-screen.png](docs/screenshots/ppp11/20261030_213839-screen.png)
+![20261031_235109-screen.png](docs/screenshots/ppp11/20261031_235109-screen.png)
+
+### Pop'n Music 7
+
+![20261112_185904-screen.png](docs/screenshots/popn7/20261112_185904-screen.png)
+![20261112_185700-screen.png](docs/screenshots/popn7/20261112_185700-screen.png)
+![20261112_185740-screen.png](docs/screenshots/popn7/20261112_185740-screen.png)
+![20261112_185926-screen.png](docs/screenshots/popn7/20261112_185926-screen.png)
+
+### Keyboardmania
+
+![20261112_190301-screen.png](docs/screenshots/kbm/20261112_190301-screen.png)
+![20261112_190524-screen.png](docs/screenshots/kbm/20261112_190524-screen.png)
+
+### Development builds
+
+`python scripts/build_staged.py`, then `python scripts/deploy.py` with a `mister.env` (see
+`scripts/deploy.py`).
+
 ## Hardware
 
 | Chip | Function | Status |
@@ -367,30 +391,6 @@ The 20261114 release builds (fitted on that date); block counts and extents per 
 `Firebeat_kbm`, `3a51f90`, seed 12 ([groups](docs/floorplan/Firebeat_kbm_groups.md)):
 
 ![Firebeat_kbm floorplan](docs/floorplan/Firebeat_kbm.png)
-
-## Screenshots
-
-### ParaParaParadise v1.1
-
-![20261030_213839-screen.png](docs/screenshots/ppp11/20261030_213839-screen.png)
-![20261031_235109-screen.png](docs/screenshots/ppp11/20261031_235109-screen.png)
-
-### Pop'n Music 7
-
-![20261112_185904-screen.png](docs/screenshots/popn7/20261112_185904-screen.png)
-![20261112_185700-screen.png](docs/screenshots/popn7/20261112_185700-screen.png)
-![20261112_185740-screen.png](docs/screenshots/popn7/20261112_185740-screen.png)
-![20261112_185926-screen.png](docs/screenshots/popn7/20261112_185926-screen.png)
-
-### Keyboardmania
-
-![20261112_190301-screen.png](docs/screenshots/kbm/20261112_190301-screen.png)
-![20261112_190524-screen.png](docs/screenshots/kbm/20261112_190524-screen.png)
-
-### Development builds
-
-`python scripts/build_staged.py`, then `python scripts/deploy.py` with a `mister.env` (see
-`scripts/deploy.py`).
 
 ## Status
 
