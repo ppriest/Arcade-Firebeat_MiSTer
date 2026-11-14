@@ -17,7 +17,7 @@
 //           clock each. A read is issued only when the FIFO has room for all of it (credits).
 //   writes  the granted master keeps the port for its burst; its words are packed in pairs, an odd
 //           first or last word with the other half's byte enables off.
-//   order   master N-1 (the picture) first, then PRI if set, then the others in turn, a command or a write burst at
+//   order   master N-1 (the picture) first, then RT and PRI if set, then the others in turn, a command or a write burst at
 //           a time; the choice is registered (A_IDLE, or the last clock of the command before) a
 //           clock before the command goes (A_CMD).
 
@@ -30,7 +30,10 @@ module hornet_ddr3 #(
     parameter logic [N-1:0] WIDE = '0,
     // a master served after N-1 and before the others' round (-1: none): Hornet's texture fills,
     // which stall vraster's pipeline while they wait; here the board's VRAM port
-    parameter int PRI = -1
+    parameter int PRI = -1,
+    // [Firebeat] a second real-time master, served after N-1 and before PRI (-1: none): the HDMI
+    // rotator, whose slices are lost if PRI's run of commands holds it off
+    parameter int RT = -1
 ) (
     input  logic                 clk,
     input  logic                 reset,         // power-up only: a transaction cut short hangs the port
@@ -151,7 +154,7 @@ function automatic logic [7:0] beats(input logic [31:0] a, input logic [10:0] n)
     return 8'((11'(a[2]) + n + 11'd1) >> 1);
 endfunction
 
-// the next master: N-1 first, then PRI, then from rr round. A read is accepted when it is chosen
+// the next master: N-1 first, then RT, then PRI, then from rr round. A read is accepted when it is chosen
 // (its address and count are taken then), so a master's request when its last command ends is
 // already its next
 logic          pick_v;
@@ -163,6 +166,7 @@ always_comb begin
     req = m_read | m_write;
     found = 1'b0; k = '0;
     if (req[N-1]) begin found = 1'b1; k = MW'(N - 1); end
+    else if (RT >= 0 && req[RT < 0 ? 0 : RT]) begin found = 1'b1; k = MW'(RT); end
     else if (PRI >= 0 && req[PRI]) begin found = 1'b1; k = MW'(PRI); end
     for (int j = 0; j < N - 1; j++) begin
         logic [MW:0] i;
@@ -194,7 +198,7 @@ always_ff @(posedge clk) begin
     if (w_out && !DDRAM_BUSY) begin DDRAM_WE <= 1'b0; w_out <= 1'b0; b_left <= b_left - 8'd1; end
     if (take) begin
         g <= pick;
-        if (pick != MW'(N - 1) && (PRI < 0 || pick != MW'(PRI))) rr <= (pick == MW'(N - 2)) ? '0 : pick + 1'd1;
+        if (pick != MW'(N - 1) && (PRI < 0 || pick != MW'(PRI)) && (RT < 0 || pick != MW'(RT))) rr <= (pick == MW'(N - 2)) ? '0 : pick + 1'd1;
         c_rd <= m_read[pick]; c_addr <= m_addr[pick]; c_burst <= m_burst[pick];
     end
     case (as)

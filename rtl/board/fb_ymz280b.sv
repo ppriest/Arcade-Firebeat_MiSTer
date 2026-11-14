@@ -43,7 +43,11 @@ module fb_ymz280b #(
     output logic        tick,           // 88.2 kHz
 
     output logic [7:0]  reg_q,          // register reg_a as last written (the state dump)
-    input  logic [7:0]  reg_a
+    input  logic [7:0]  reg_a,
+    // the probes: a tick lost (one came with the last still pending), a voice pass running, a read
+    output logic        p_lost,
+    output logic        p_pass,
+    output logic        p_fetch
 );
 
 // 88.2 kHz = 66.667 MHz * 1323 / 1,000,000
@@ -128,6 +132,9 @@ typedef enum logic [3:0] {
 } e_t;
 e_t          e;
 logic        t_pend;
+assign p_lost = tick && t_pend;
+assign p_pass = e != E_IDLE;
+assign p_fetch = y_req;
 logic [2:0]  v;
 logic signed [26:0] acc_l, acc_r;
 logic [7:0]  b0, b1;                    // fetched bytes (PCM16: low, high)
@@ -175,13 +182,19 @@ wire signed [15:0] dec_smp = dec21[15:0];
 
 wire busy = e != E_IDLE;
 wire [2:0]  wv = cur[4:2];
-wire [15:0] w_vol = volumes(wdata, pan[wv]);
-wire [15:0] p_vol = volumes(level[wv], wdata[3:0]);
+// a level or pan write's volumes, the clock after it (cur's decode and the divide in one clock
+// do not meet timing)
+logic       vu_go;
+logic [2:0] vu_v;
+logic [7:0] vu_lv;
+logic [3:0] vu_pn;
 wire        w_kon = wdata[7] && wdata[6:5] != 2'd0;     // mode 0 is written as key off
 
 always_ff @(posedge clk) begin
     ack <= 1'b0;
     if (tick) t_pend <= 1'b1;
+    vu_go <= 1'b0;
+    if (vu_go) {vol_l[vu_v], vol_r[vu_v]} <= volumes(vu_lv, vu_pn);
 
     if (y_req && y_ack) begin
         y_req <= 1'b0;
@@ -212,8 +225,14 @@ always_ff @(posedge clk) begin
                     end
                     keyon[wv] <= w_kon;
                 end
-                4'b00_10: begin level[wv] <= wdata; {vol_l[wv], vol_r[wv]} <= w_vol; end
-                4'b00_11: begin pan[wv] <= wdata[3:0]; {vol_l[wv], vol_r[wv]} <= p_vol; end
+                4'b00_10: begin
+                    level[wv] <= wdata;
+                    vu_go <= 1'b1; vu_v <= wv; vu_lv <= wdata; vu_pn <= pan[wv];
+                end
+                4'b00_11: begin
+                    pan[wv] <= wdata[3:0];
+                    vu_go <= 1'b1; vu_v <= wv; vu_lv <= level[wv]; vu_pn <= wdata[3:0];
+                end
                 4'b01_00: start[wv][24:17]  <= wdata;
                 4'b01_01: lstart[wv][24:17] <= wdata;
                 4'b01_10: lend[wv][24:17]   <= wdata;
@@ -341,7 +360,7 @@ always_ff @(posedge clk) begin
     endcase
 
     if (reset) begin
-        y_req <= 1'b0; rb_pend <= 1'b0; ext_en <= 1'b0; keyon_en <= 1'b0; ea <= '0; cur <= 8'h00;
+        y_req <= 1'b0; rb_pend <= 1'b0; ext_en <= 1'b0; keyon_en <= 1'b0; ea <= '0; cur <= 8'h00; vu_go <= 1'b0;
         status <= 8'h00; e <= E_IDLE; t_pend <= 1'b0; out_l <= '0; out_r <= '0;
         for (int i = 0; i < 8; i++) begin
             fnum[i] <= '0; looping[i] <= 1'b0; mode[i] <= '0; keyon[i] <= 1'b0; playing[i] <= 1'b0;

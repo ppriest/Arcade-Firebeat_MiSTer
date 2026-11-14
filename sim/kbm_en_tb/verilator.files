@@ -1,0 +1,3 @@
+rtl/board/fb_kbm_en.sv
+sim/kbm_en_tb/tb_kbm_en.sv
++incdir+rtl/board

@@ -61,7 +61,7 @@ module tb_cpu (
         .d_req, .d_we, .d_addr, .d_a31, .d_cop, .d_be, .d_wdata, .d_ack, .d_rdata,
         .iccr_o(iccr), .dccr_o(dccr), .dcwr_o(dcwr),
         .dcr_we(c_dcr_we), .dcr_re(), .dcr_addr, .dcr_wdata, .dcr_rdata(c_dcr_rdata),
-        .ext_irq, .int_irq(9'h0),
+        .ext_irq, .ext_rise(5'd0), .int_irq(9'h0),
         .dbg_exec, .dbg_pc, .dbg_ir, .dbg_sel, .dbg_val, .dbg_we, .dbg_wsel, .dbg_wdata
     );
     logic        c_dcr_we, dma_hit;

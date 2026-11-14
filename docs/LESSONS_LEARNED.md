@@ -922,6 +922,14 @@ negative; then run random stimulus that reaches the edges of each range.
 
 ## Timing closure
 
+- **[Firebeat] Quartus Lite has no LogicLock.** A region (`LL_*` assignments) to hold the SDRAM
+  controller beside its pins compiled without error, and a seed that had failed then met timing,
+  which read as the region working. The fit report said otherwise: Critical Warning 140003,
+  "Current license file does not support LogicLock regions", and the floorplan showed the block
+  spread over the device's height as before. Read the fit report's warnings for any placement
+  assignment before crediting it; on Lite, placement is steered by RTL (registers, duplication)
+  and seeds only.
+
 - **[BallySente] Ask the timing analyser which path fails; do not reason about it.** A filter
   missed 25 ns by 0.182 ns. The critical path "obviously" ran through the shared multiplier, so
   the operand mux was registered -- still short. Then the mux was given its own cycle -- slack got

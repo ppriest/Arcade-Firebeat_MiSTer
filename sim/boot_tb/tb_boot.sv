@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // rtl/board/fb_board.sv for sim/boot_tb/main.cpp: the board from power-on.
-module tb_boot (
+module tb_boot #(
+    parameter bit KBM = 1'b0
+) (
     input  logic         clk,
     input  logic         reset,
     input  logic         ce,
@@ -49,6 +51,10 @@ module tb_boot (
     input  logic [7:0]   in0, in1, in2, in3,
     input  logic [63:0]  sensors,
     input  logic [3:0]   cabinet_info,
+    input  logic [23:0]  kbd0, kbd1,     // KBM
+    output logic         midi_txd,
+    output logic         midi_tx_v,
+    output logic [7:0]   midi_tx_byte,
     output logic [7:0]   control,
     input  logic         dg_we,
     input  logic [7:0]   dg_addr,
@@ -91,6 +97,12 @@ module tb_boot (
     assign sensor[1] = sensors[31:16];
     assign sensor[2] = sensors[47:32];
     assign sensor[3] = sensors[63:48];
+    logic [23:0] kbd [2];
+    logic [7:0]  wheel [2];
+    assign kbd[0] = kbd0;
+    assign kbd[1] = kbd1;
+    assign wheel[0] = 8'h80;
+    assign wheel[1] = 8'h80;
     logic [31:0] sd_lba [2];
     logic [5:0]  sd_blk_cnt [2];
     assign sd_lba0 = sd_lba[0];
@@ -108,9 +120,10 @@ module tb_boot (
     logic         x_write;
     logic [31:0]  x_addr, x_wdata, x_wdata_hi;
     logic [10:0]  x_burst;
-    fb_board u (.*, .halt(x_halt), .frozen(x_frozen), .st_a(ld_we ? ld_a : st_a), .st_d,
+    fb_board #(.KBM(KBM)) u (.*, .halt(x_halt), .flash_loaded(1'b1), .perf(), .frozen(x_frozen), .wd_reset(), .wd_dbg(), .kbm_en(1'b0), .gcu_skip(2'b00), .st_a(ld_we ? ld_a : st_a), .st_d,
         .st_we(ld_we), .st_wd(ld_d), .ata_check(), .ata_key(), .aud_l(), .aud_r(), .nv_wr(),
-        .c_req(b_c_req), .c_we(b_c_we), .c_addr(b_c_addr), .c_ack(c_ack && !x_own), .gd_crtc(), .gd_layer(), .gd_alpha(), .gd_x(), .gd_y(), .gd_w(), .gd_h(), .gd_base(), .gd_6c());
+        .c_req(b_c_req), .c_we(b_c_we), .c_addr(b_c_addr), .c_ack(c_ack && !x_own), .gd2_crtc(), .gd2_layer(), .gd2_alpha(), .gd2_x(), .gd2_y(), .gd2_w(), .gd2_h(), .gd2_base(), .gd2_6c(), .gd_crtc(), .gd_layer(), .gd_alpha(), .gd_x(), .gd_y(), .gd_w(), .gd_h(), .gd_base(), .gd_6c(),
+        .dp_cs(), .dp_we(), .dp_addr(), .dp_wd(), .dp_rd(8'h00), .dp_irq(1'b0));
     assign c_req  = x_own ? x_c_req : b_c_req;
     assign c_we   = !x_own && b_c_we;
     assign c_addr = x_own ? x_c_addr : b_c_addr;

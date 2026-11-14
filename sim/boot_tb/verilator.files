@@ -5,6 +5,8 @@ rtl/board/fb_cache.sv
 rtl/board/fb_ppc_mem.sv
 rtl/board/fb_ppc_dma.sv
 rtl/board/fb_pc16552.sv
+rtl/board/fb_ns16550.sv
+rtl/board/fb_midi_kbd.sv
 rtl/board/fb_spu.sv
 rtl/board/fb_rtc65271.sv
 rtl/board/fb_flash.sv
@@ -14,6 +16,8 @@ rtl/board/fb_gcu_shell.sv
 rtl/board/fb_atapi.sv
 rtl/board/fb_cd_slot.sv
 rtl/board/fb_ata.sv
+rtl/board/fb_kbm_en.sv
 rtl/board/fb_dump.sv
 rtl/board/fb_board.sv
 sim/boot_tb/tb_boot.sv
++incdir+rtl/board

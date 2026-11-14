@@ -2,8 +2,8 @@
 //
 // The GCU's command engine on a captured window (scripts/mame_vram_window.py), against MAME:
 //
-//   scripts/run_verilator.sh gcu_tb +win=debug/ppp11-vram21400 [+lat=20] [+busy=10] [+gap=0] [+scan=1]
-//       [+limit=N] [+rst=N]
+//   scripts/run_verilator.sh gcu_tb +win=debug/ppp11-vram21400 [+lat=20] [+busy=10] [+gap=0] [+scan=1|2] [+skip]
+//       [+limit=N] [+rst=N] [+prof]
 //
 // VRAM starts as vram_in.raw (MAME's m_vram words, host order: DDR3 word k is m_vram[k]); the
 // register file is loaded from regs_in.txt as scripts/gcu_model.py loads it, then every write of
@@ -14,10 +14,15 @@
 // writes is not in the log), against 8 frames of 66.667 MHz at 58.4875 Hz. +scan=1 runs
 // fb_gcu_disp on the shell's registers beside the engine; after the VRAM comparison the frame it
 // shows is compared with screen_out.bin.
+// +scan=2: Keyboardmania's stacked mode instead (both screens from this GCU's registers), its late
+// lines counted over the window; no screen comparison.
 //
 // +rst=N resets the GCU N clocks into the window, mid-command, waits for it to go idle, then
 // replays the window from the start on vram_in: the result must still be MAME's, and hornet_ddr3
 // must not see a burst cut short.
+//
+// +prof: the window's clocks by engine state (S_WAIT by the state it returns to), and how many of
+// each had the engine's DDR3 port waiting.
 
 #include "Vtb_gcu.h"
 #include "verilated.h"
@@ -27,6 +32,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 double sc_time_stamp() { return 0; }
 
@@ -35,11 +41,21 @@ static Ddr3Model ddr;
 static uint64_t clocks = 0;
 static uint64_t rst_clk = 0;            // +rst: the clock the reset is raised for
 static bool rst_hit = false, rst_busy = false;
+static bool prof_on = false;
+static uint64_t prof_n[32][32], prof_w[32][32];
+static const char *st_name[32] = {"IDLE", "POP", "DEC", "WAIT", "CMD", "NEXT", "DLX", "DLF", "DLEND",
+    "VGET", "VPOP", "VDEC", "VFL", "FROW", "FNXT", "OD1", "OD2", "OD3", "OD4", "OSET", "OROW", "OCH",
+    "OPX", "ODRN", "OCHN", "CROW", "CPX", "CDRN", "CNXT", "RWIN", "OWD", "OBG"};
 
 static void tick() {
     if (rst_clk && clocks == rst_clk) {
         rst_hit = true; rst_busy = !t->gcu_idle;
         t->reset = 1; t->eval();
+    }
+    if (prof_on) {
+        unsigned s = t->prof & 31, r = s == 3 ? t->prof >> 5 & 31 : 0;
+        prof_n[s][r]++;
+        if (t->prof >> 10 & 1) prof_w[s][r]++;
     }
     ddr.sample(t);
     t->clk = 1; t->eval();
@@ -80,6 +96,7 @@ int main(int argc, char **argv) {
     std::string win = "debug/ppp11-vram21400";
     long limit = 0, rst_at = 0;
     int scan = 0;
+    bool prof = false, skip = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a.rfind("+win=", 0) == 0) win = a.substr(5);
@@ -89,6 +106,8 @@ int main(int argc, char **argv) {
         else if (a.rfind("+scan=", 0) == 0) scan = atoi(a.c_str() + 6);
         else if (a.rfind("+limit=", 0) == 0) limit = atol(a.c_str() + 7);
         else if (a.rfind("+rst=", 0) == 0) rst_at = atol(a.c_str() + 5);
+        else if (a == "+prof") prof = true;
+        else if (a == "+skip") skip = true;   // fb_gcu skip held: no draw command draws
     }
 
     std::vector<uint32_t> vin = load_words(win + "/vram_in.raw");
@@ -96,7 +115,9 @@ int main(int argc, char **argv) {
         ddr.mem[i] = (uint64_t)vin[2 * i + 1] << 32 | vin[2 * i];
 
     t = new Vtb_gcu;
-    t->scan = scan;
+    t->scan = scan != 0;
+    t->stacked = scan == 2;
+    t->skip = skip;
     t->reset = 1; t->por = 1;
     for (int i = 0; i < 8; i++) tick();
     t->reset = 0; t->por = 0;
@@ -126,6 +147,7 @@ int main(int argc, char **argv) {
     uint64_t c0 = clocks, cmds = 0;
     ddr.rd_beats = ddr.wr_beats = 0;
     if (rst_at) rst_clk = c0 + rst_at;
+    prof_on = prof;
     for (size_t i = 0; i <= wr.size(); i++) {
         if (i < wr.size()) {
             bus_write(wr[i].a, wr[i].d, wr[i].m);
@@ -144,8 +166,21 @@ int main(int argc, char **argv) {
         }
     }
     while (!t->gcu_idle) tick();
+    prof_on = false;
     for (int i = 0; i < 64; i++) tick();
     uint64_t c = clocks - c0;
+    if (prof) {
+        std::vector<std::pair<uint64_t, int>> v;
+        for (int s = 0; s < 32; s++) for (int r = 0; r < 32; r++) if (prof_n[s][r]) v.push_back({prof_n[s][r], s * 32 + r});
+        std::sort(v.rbegin(), v.rend());
+        for (auto &e : v) {
+            int s = e.second / 32, r = e.second % 32;
+            char n[32];
+            snprintf(n, sizeof n, s == 3 ? "WAIT>%s" : "%s", s == 3 ? st_name[r] : st_name[s]);
+            printf("  %-10s %10lu clocks %5.1f%%, port waiting %lu\n", n, (unsigned long)e.first,
+                   100.0 * e.first / c, (unsigned long)prof_w[s][r]);
+        }
+    }
 
     std::vector<uint32_t> vout = load_words(win + "/vram_out.raw");
     long bad = 0, shown = 0;
@@ -171,7 +206,8 @@ int main(int argc, char **argv) {
     printf("VRAM diff: %ld of %u pixels\n", bad, 2 * 0x800000u);
 
     long sbad = 0;
-    if (scan) {
+    if (scan == 2) printf("stacked scan-out: late lines %u\n", t->late);
+    else if (scan) {
         // the frame after the next vsync is built from the registers the window left
         std::vector<uint32_t> ref(512 * 384);
         f = fopen((win + "/screen_out.bin").c_str(), "rb");

@@ -12,7 +12,8 @@ The module gets, between the markers `// st_lists: begin` and `// st_lists: end`
     python scripts/st_lists.py --check    exit 1 if a module's file is not what this would write
 
 A register that must not be in the dump (a RAM, a constant, a pulse the dump never sees high) goes
-in the module's `skip`; say why there or in docs/STATE.md.
+in the module's `skip`; say why there or in docs/STATE.md. A module's `rd` is what the read mux
+returns for any other st_a, for a RAM read through a port of its own.
 """
 import re, sys, pathlib
 
@@ -24,6 +25,9 @@ MODULES = {
     'rtl/board/fb_rtc65271.sv':  dict(abits=6, skip={'regs', 'xmem', 'xq', 'rreg', 'xr_q', 'r'}),
     'rtl/board/fb_flash.sv':     dict(abits=6, skip=set()),
     'rtl/board/fb_pc16552.sv':   dict(abits=5, skip=set()),
+    'rtl/board/fb_ns16550.sv':   dict(abits=7, skip={'rfifo', 'tfifo'},
+                                      rd="st_a[6] ? 32'(st_a[4] ? tq : rq) : 32'd0"),
+    'rtl/board/fb_midi_kbd.sv':  dict(abits=6, skip=set()),
     'rtl/board/fb_gcu_shell.sv': dict(abits=6, skip=set()),
     'rtl/board/fb_ppc_dma.sv':   dict(abits=8, skip={'sim_words', 'sim_dropped', 'sim_live', 'sim_gcu_wait', 'sim_src_wait'}),
 }
@@ -194,7 +198,7 @@ def generate(path, cfg):
     for lst in lists:
         for ad, x, en in lst:
             rd.append('    %s: st_d = 32\'(%s);' % (lit(ad), x))
-    rd += ['    default: ;', '    endcase', 'end', END]
+    rd += ['    default: %s' % ("st_d = %s;" % cfg['rd'] if 'rd' in cfg else ';'), '    endcase', 'end', END]
     i = text.rindex('endmodule')
     text = text[:i].rstrip('\n') + '\n\n' + '\n'.join(rd) + '\n\n' + text[i:]
     return text.replace('\n', nl), src, addr, [[x for _, x, _ in l] for l in lists]

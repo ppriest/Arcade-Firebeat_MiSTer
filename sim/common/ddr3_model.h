@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The DE10-nano's DDRAM port as hornet_ddr3 sees it, for C++ benches: 64-bit beats in a host array
-// (the VRAM window, 32 MB from byte 0x30000000), DDRAM_BUSY high `busy` percent of the clocks, and a
-// read's first beat `lat` clocks after the command, then a beat a clock, reads served in order. `gap`
+// (the VRAM window, 32 MB from byte 0x30000000, and the second GCU's from 0x32000000), DDRAM_BUSY high `busy` percent of the clocks, and a
+// read's first beat `lat` clocks after the command, then a beat a clock, reads served in order and
+// holding the memory as it was when the command was taken (a write after it does not reach it). `gap`
 // percent of the clocks a due beat is held back, so a burst's beats arrive with holes in them.
 //
 // Per clock, with the model's outputs set before the edge:
@@ -21,12 +22,15 @@ struct Ddr3Model {
     static constexpr uint32_t BASE = 0x30000000u >> 3;     // the window's first beat
     static constexpr uint32_t BEATS = 0x2000000u >> 3;     // 32 MB
     std::vector<uint64_t> mem = std::vector<uint64_t>(BEATS, 0);
+    // KBM: the second GCU's VRAM, 32 MB from 0x32000000; saved, not in the state dump's file
+    static constexpr uint32_t BASE2 = 0x32000000u >> 3;
+    std::vector<uint64_t> mem2 = std::vector<uint64_t>(BEATS, 0);
     // the state dump's area (rtl/board/fb_dump.sv), allocated at its first write; not saved
     static constexpr uint32_t DUMP = 0x34000000u >> 3, DUMP_BEATS = 0x2620000u >> 3;
     std::vector<uint64_t> dump;
     int lat = 20, busy = 10, gap = 0;
     uint64_t now = 0, rd_beats = 0, wr_beats = 0, busy_clocks = 0;
-    struct Rd { uint32_t a; int n; uint64_t at; };
+    struct Rd { uint32_t a; int n; uint64_t at; std::vector<uint64_t> d; };
     std::deque<Rd> rq;
     uint32_t w_a = 0;
     int w_left = 0;
@@ -41,11 +45,18 @@ struct Ddr3Model {
     // a bench's save and restore: raw(pointer, bytes) writes or reads
     template <class F> void io(F raw, bool out) {
         raw(mem.data(), mem.size() * 8);
+        raw(mem2.data(), mem2.size() * 8);
         raw(&now, sizeof now); raw(&rng, sizeof rng); raw(&w_a, sizeof w_a); raw(&w_left, sizeof w_left);
         uint32_t n = rq.size();
         raw(&n, sizeof n);
         if (!out) rq.resize(n);
-        for (Rd &r : rq) raw(&r, sizeof r);
+        for (Rd &r : rq) {
+            raw(&r.a, sizeof r.a); raw(&r.n, sizeof r.n); raw(&r.at, sizeof r.at);
+            uint32_t k = r.d.size();
+            raw(&k, sizeof k);
+            if (!out) r.d.resize(k);
+            raw(r.d.data(), k * 8);
+        }
     }
 
     uint64_t &beat(uint32_t a) {
@@ -53,6 +64,7 @@ struct Ddr3Model {
             if (dump.empty()) dump.assign(DUMP_BEATS, 0);
             return dump[a - DUMP];
         }
+        if (a - BASE2 < BEATS) return mem2[a - BASE2];
         uint32_t i = a - BASE;
         if (i >= BEATS) { fprintf(stderr, "ddr3: beat %08X outside VRAM\n", a); exit(1); }
         return mem[i];
@@ -61,7 +73,9 @@ struct Ddr3Model {
     template <class T> void sample(T *t) {
         if (t->DDRAM_BUSY) return;
         if (t->DDRAM_RD) {
-            rq.push_back({(uint32_t)t->DDRAM_ADDR, (int)t->DDRAM_BURSTCNT, now + lat});
+            Rd r{(uint32_t)t->DDRAM_ADDR, (int)t->DDRAM_BURSTCNT, now + lat, {}};
+            for (int k = r.n - 1; k >= 0; k--) r.d.push_back(beat(r.a + k));    // popped from the back
+            rq.push_back(std::move(r));
         }
         if (t->DDRAM_WE) {
             if (w_left == 0) { w_a = (uint32_t)t->DDRAM_ADDR; w_left = t->DDRAM_BURSTCNT; }
@@ -80,7 +94,8 @@ struct Ddr3Model {
         t->DDRAM_DOUT_READY = 0;
         if (!rq.empty() && rq.front().at <= now && !(gap && draw(gap))) {
             Rd &r = rq.front();
-            t->DDRAM_DOUT = beat(r.a);
+            t->DDRAM_DOUT = r.d.back();
+            r.d.pop_back();
             t->DDRAM_DOUT_READY = 1;
             r.a++;
             rd_beats++;

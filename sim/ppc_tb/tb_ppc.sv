@@ -35,7 +35,7 @@ module tb_ppc (
         .i_req, .i_addr, .i_ack, .i_rdata,
         .d_req, .d_we, .d_addr, .d_be, .d_wdata, .d_ack, .d_rdata,
         .dcr_we, .dcr_re(), .dcr_addr, .dcr_wdata, .dcr_rdata,
-        .ext_irq, .int_irq(9'h0),
+        .ext_irq, .ext_rise(5'd0), .int_irq(9'h0),
         .dbg_exec, .dbg_pc, .dbg_ir, .dbg_sel, .dbg_val, .dbg_we, .dbg_wsel, .dbg_wdata
     );
 endmodule

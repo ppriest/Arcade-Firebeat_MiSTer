@@ -14,5 +14,7 @@ rtl/board/fb_gcu_shell.sv
 rtl/board/fb_atapi.sv
 rtl/board/fb_cd_slot.sv
 rtl/board/fb_ata.sv
+rtl/board/fb_kbm_en.sv
 rtl/board/fb_board.sv
 sim/board_tb/tb_board.sv
++incdir+rtl/board

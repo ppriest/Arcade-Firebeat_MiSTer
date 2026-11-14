@@ -1,0 +1,2 @@
+rtl/kbm_midiout.sv
+sim/midiout_tb/tb_midiout.sv

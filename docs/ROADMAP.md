@@ -238,7 +238,8 @@ Each phase ends with a commit, a bench fed from MAME, and its exit check run.
   6-8), with MAME's keyboard keys beside the pads; IN3's DIP switches on the OSD.
 - **Pause** suspending the PPC (and its DMA and the GCU's command engine with it); hiscore does
   not apply (the RTC NVRAM holds the settings).
-- **CRT Adjust**, HDMI scaling and crop, flip screen (ppp has no flip DIP: a fake one), audio mix;
+- **CRT Adjust**, HDMI scaling and crop, flip screen (ppp has no flip DIP: a fake one); audio
+  stereo only, no mono or mix option (`AUDIO_MIX = 0`);
   the OSD shows only what applies.
 - **Exit**: the README's feature list checked on the board, flip against the unflipped frame
   rotated 180 degrees.
@@ -313,7 +314,7 @@ RTC, two CD-ROM drives with CD audio) plus:
 
 | Part | MAME | Plan |
 |---|---|---|
-| second K057714, `gcu_sub` at `7E800100-7E8001FF` | F:1834-1840, 1875 | a second `fb_gcu_shell` + `fb_gcu_disp`, its own VRAM in DDR3 |
+| second K057714, `gcu_sub` at `7E800100-7E8001FF` | F:1834-1840, 1875 | a second `fb_gcu_shell`, its own VRAM in DDR3; one `fb_gcu` and one `fb_gcu_disp` serve both |
 | two screens, both ROT270: 640 x 480 at 25.175 MHz in the BIOS, then 512 x 384 at 16.6666 MHz, 58.32 Hz, in the game (HARDWARE_NOTES, "Keyboardmania in MAME") | F:1821-1832, 2755-2758 | the GCU's existing modes; OSD: left, right, or both side by side (decision A) |
 | PC16552D `duart_midi`, 24 MHz, top byte lane, `offset>>6` | F:1852-1864, 1876 | a second `fb_pc16552`; IRQ1 through the extend-board enable bits 0 and 1 (F:1903, 1914) |
 | two MIDI keyboards, 24 keys, 31250 baud, chan1 left, chan0 right | F:1855-1864, `midikbd.cpp` | note-on/off bytes generated into each RX from the MiSTer inputs (24 keys a player from the keyboard and pad buttons) |
@@ -333,6 +334,12 @@ Budgets, from the fit reports in `build/output_files/`:
 | second GCU: shell + engine 2,627, display 823 | ~3,450 | `Firebeat.fit.rpt`, `Firebeat_popn.fit.rpt` |
 | second PC16552 87, key generator and wheels | ~300, estimated | `Firebeat_popn.fit.rpt` (`u_uart`) |
 | sum | ~40,500 of 41,910 (97%) | |
+| `Firebeat_kbm` measured, without the second display: 42,119 (100%), fit failed. Second GCU 2,601, MIDI UART channels 500 + 504 (the estimate was 87 a channel: their 16-byte FIFOs are registers) | 42,119 | `Firebeat_kbm.fit.summary`, build of `142aab3` |
+| `Firebeat_kbm` with one engine for both GCUs: 41,028 (98%), fits, timing not met (HDMI setup −0.471, clk_sys setup −0.162, clk_mem hold −0.542). The GCUs 3,655 (shells 805 + 722, engine 2,129) against 5,445; the second display (~900) not yet in | 41,028 | `Firebeat_kbm.fit.summary`, build of `49b59d6` |
+| `Firebeat_kbm` with the MIDI UART FIFOs in MLABs: 40,370 (96%), fits, timing not met (HDMI setup −0.048; clk_sys +0.175, hold met). UART channels 347 + 360 against 519 + 527; the second display (823-906) would take it to about 41,250 (98%) | 40,370 | `Firebeat_kbm.fit.summary`, `.sta.summary`, build of `38441e9` |
+| `Firebeat_kbm` with one display for both GCUs: 40,690 (97%), 320 more; clk_sys setup −0.002, everything else met. No HDMI rotation | 40,690 | `Firebeat_kbm.fit.summary`, `.sta.summary`, build of `87b10de` |
+| `Firebeat_kbm` with HDMI rotation, in place of the test picture's writer: 40,693 (97%), 3 more, 200 RAM blocks (12 more); timing not met: clk_mem setup −0.243 (TNS −0.517), the rest met. Seed 2: 40,997 (98%), HDMI setup −0.211, clk_mem −0.076, clk_sys setup −0.025 and hold −0.618; seeds 3 and 4 fail too. Seed 5 meets timing: 41,042 (98%), HDMI setup +0.059, clk_mem +0.130, clk_sys +0.529 | 41,042 | build logs of `f0a5b3e` and `55eb661` (same RTL); `build_seed5` |
+| `Firebeat_kbm` with the RTC preset (`323c6fd`): seeds 5-14 all fail timing at 96-97%, in the SDRAM pin registers (clk_mem, `dq_in` -> `dq_in2` up to -0.788), `ascal`'s adaptive filter (HDMI, -0.368) and `fb_ymz280b` (clk_sys, -0.034). Without the adaptive scanline filter and YC output (`4274ab2`): 38,306 (91%), seed 5 meets timing (HDMI setup +0.087, clk_mem +0.189, clk_sys +0.605) | 38,306 | `build_worst_paths` on `build_seed8`, `10`, `13`, `14`; `build_seed5` of `4274ab2` |
 
 That does not fit with timing closed (Firebeat_popn at 90% was seed-sensitive). Ways back, each to
 be measured by a build: one drawing engine time-shared by both GCUs (two register files and
@@ -355,14 +362,92 @@ Steps, each with its bench before hardware:
    above replaced by measured ones; the plan revised before step 2. Done except the area (a build,
    step 2): HARDWARE_NOTES, "Keyboardmania in MAME"; the install (BACKUP CLEAR) and the screen
    mode found on the way.
-2. The revision: second UART, key generator, wheels, inputs; the PPC trace against MAME's to the
-   point where the second GCU is first used.
-3. The second GCU and the screen output (decisions A, C); each screen's frame against MAME's
-   `lscreen` and `rscreen`.
+2. The revision: second UART, key generator, wheels, inputs, and the second GCU's registers and
+   VRAM (no display: the BIOS tests its VRAM before it reaches the MIDI setup); the PPC trace
+   against MAME's through the MIDI setup. Bench done (`sim/boot_tb -GKBM=1` to frame 4300): ATA, RTC,
+   MIDI and wheel streams match MAME's; the boot screen's GCU words and the extend board's IRQ acks
+   differ in order or value with timing (the BIOS's draw, the two keyboards' relative phase). The
+   area build remains.
+3. The second GCU's display and the screen output (decisions A, C); each screen's frame against MAME's
+   `lscreen` and `rscreen`. Bench done (`sim/disp_tb -GKBM=1 +kbm=debug/kbm-screens4000`): left, right
+   and stacked, 0 pixels differing, no late line at DDR3 latency 60 and 30% busy. One `fb_gcu_disp`
+   serves both: only one screen is on the raster at a time. HDMI rotation: `rtl/video/fb_rot16.sv`,
+   on the DDR3's master 1 (the test picture's writer, which KBM does not build). Bench done
+   (`sim/rot_tb +kbm=debug/kbm-screens4000`, 5 s): left, right and stacked rotated, 0 pixels differing.
+   With writes stalled a uniform 0..N clocks, stacked loses no slice at N=8 and loses 362 at N=16;
+   single loses none at N=24. Its rate on the board is not measured, and `late` reaches no probe.
+   On the board (`Firebeat_kbm_30000013`, kbm3rd attract, both screens rotated) probe X read
+   `rot_late=65535` in 2,547 frames: a beat a command is too slow stacked. Since then 16-line slices,
+   a 4-beat burst a framebuffer row: the bench (stall per command) loses nothing stacked at N=72 and
+   loses 29 slices at N=96, CCW and CW. `Firebeat_kbm_30000014` still read `rot_late=19208` in 4,171
+   frames stacked: between bursts the rotator dropped its request for a clock, and hornet_ddr3 gave the
+   port to the GCU's bursts of up to 128 beats. With the request held (f27c5a4), `Firebeat_kbm_30000015`,
+   kbm3rd attract, both screens rotated: `rot_late=0 x_frames=3340 scan_late=2`
+   (`debug/hw/shot-20261113-212831.png`).
 4. MIDI out to the MT32-pi; its byte stream against MAME's chan1 TX capture, then by ear on the board.
-5. On the board: kbm to its attract mode, then kbm2nd, kbm3rd, kbh.
+5. On the board: kbm to its attract mode, then kbm2nd, kbm3rd, kbh. kbm reaches attract from the
+   RTC preset (`debug/hw/shot-20261108-014828.png`); the user reports noisy sound effects and draw
+   time not met. Plan (user): (a) probes in a `Firebeat_kbm_stp` revision, per frame: the GCU
+   engine's busy clocks and the CPU's queue-full hold per GCU, the deepest queue, a list running at
+   vblank, `fb_gcu_disp`'s late lines, `fb_rot16`'s dropped slices, the YMZ280B's lost ticks, longest
+   pass and slowest sample read; (b) the sound flash 0xFF when no NVRAM file loads (it is otherwise
+   the SDRAM's old contents, and kbm keys ADPCM voices from it; where a cabinet's samples come from
+   is open); (c) HDMI rotation CW and flipped as well as CCW; (d) optimise from the readings.
+   (a)-(c) in `d31f8f2`; F and M are left out of `Firebeat_kbm_stp` to fit (98% ALMs, seed 9 met;
+   `Firebeat_kbm` seed 5 met at 97%). kbm attract, `Firebeat_kbm_30000003.rbf`, clk_sys 66.667 MHz
+   (1.14 M clocks a frame), X cleared at boot: the YMZ280B lost no tick, longest pass 103 clocks and
+   longest read 60 of 756; fb_rot16 dropped slices past the counter's 65535; frames with a CPU write
+   to a GCU queue held 4,764 of 6,188; frames starting with the engine running 5,032; the most engine
+   clocks in a frame 1,143,166 (all of it). The last frame (K): engine 273 k for GCU 0, 300 k for
+   GCU 1, 50 k of it waiting on DDR3; GCU 1's queue full and the CPU held 386 k; deepest queue 2 and
+   30 of 32. The engine's own rate, not DDR3, holds the CPU.
+   The board's `Keyboardmania.nvm`, autosaved before (b), held SDRAM leftovers in all three flash
+   chips (sound flash 2: 383,856 of 2 MB 0xFF; MAME's kbm flash stays all 0xFF through boot and
+   attract) and loaded them at each launch: replaced on the board by 0xFF flash with its own RTC,
+   the old file kept as `Keyboardmania.nvm.garbage-flash`.
+   Profile (`sim/gcu_tb +prof`, lat 20, busy 10%) of attract frames 9201-9208, the heaviest scene
+   (1,141 of 14,027 attract frames; 16 objects, 526 k pixels drawn and 310 k blended a frame per
+   GCU): each GCU alone takes 62% of the frames (`debug/kbm-vram9200`, `-sub`; 0 pixels differ),
+   so the shared engine needs 124%. Of a GCU's clocks: the source row read 30%, the destination
+   read before blending 22%, the pixels a beat a clock 20%, the chunk's write 24%, each waiting for
+   the last. DDR3 moved 2.63 M beats in 5.64 M clocks; DDRAM_CLK is clk_sys. Drawing behind the
+   reads (DR apart from DB): 49.8% and 49.4%, 99% for the pair; 39.7% at lat 5 busy 0. The regression
+   windows, random windows and six resets unchanged (0 pixels differ). The next row's source read
+   before the row's write: 39.4% and 39.1%, 79% for the pair; 32.4% at lat 5 busy 0. The DDR3 model
+   now returns a read's data as of its command: without the overlap check gcu-rand5-8 differ by
+   2,820-7,398 pixels, with it 0.
+   On the board (probe K, `Firebeat_kbm_stp` 30000007, attract): the shared engine ran 363 k and
+   366 k clocks for the two GCUs in a frame, GCU 1's queue was full and the CPU's writes to it held
+   for 630 k, and 13,076 of 15,742 frames began with the engine still drawing (the second screen
+   drawn incompletely, user); scan-out had no late line and the rotator dropped nothing (probe X).
+   An engine per GCU (`521e2c4`, the second on its own DDR3 master): 2,143 ALMs more, 89-90%, and
+   timing failed on seeds 5, 7, 9 and 10 (HDMI and clk_mem). Reverted for the read-ahead below:
+   the engine is near DDR3-bound, so two engines on one DDR3 gain little over one.
+   Read-ahead in `fb_gcu` (`sim/gcu_tb +prof`, `kbm-vram9200`, lat 20 busy 10%, one GCU): a second
+   read queued behind the first (the blend's destination read no longer waits for the source row to
+   land) 3,596,720 -> 3,405,110 clocks; the destination read issued ahead of the previous row's held
+   write, the chunk built once that write has read DB out (and the write first when the two meet:
+   an object wider than a VRAM row) 3,004,197 (32.9% of 8 frames; 66% for both GCUs on one engine),
+   of which 2.63 M clocks are the window's DDR3 beats.
+   Every window that matched still matches (gcu-one and gcu-sub differ by 26,948 and 34,634 pixels
+   with or without it). A reset mid-window leaves pixels 0-1 of gcu-rand5 wrong at some reset clocks,
+   with or without it (2 of 51 points before, 5 of 51 after): not found yet.
+   On the board with read-ahead (`c1aa14e`, `Firebeat_kbm_stp` 30000009, attract, counters cleared
+   in the how-to-play demo, 11,367 frames): the last frame's engine time 194 k and 210 k clocks
+   (was 363 k and 366 k), GCU 1's writes held 209 k (was 630 k); the worst frame 918 k busy and
+   882 k held; 10,457 frames began with the engine drawing and 11,353 had a write held; no late
+   scan-out line, nothing dropped by the rotator. Release build: `Firebeat_kbm` 30000008, seed 10.
+   `Firebeat_kbm_stp` 30000017, one screen (user: lines on that screen lag or are not drawn, then
+   tear): probe X `x_busy=1143166 frames_held=63576` of 65,535 frames, `rot_late=0 scan_late=0`.
+   With one screen shown, the hidden GCU's draw commands are skipped (`fb_gcu` skip, HACKS);
+   `sim/gcu_tb +skip` on `kbm-vram9200`: 10,787 clocks, without it 3,004,197 and 0 pixels differ.
 6. The XT446 in the core: the H8S/2655 against a MAME trace of the firmware from reset; the SWP30
    against MAME's output for a captured MIDI stream; then the area build, and the OSD choice.
+7. English instructions for MAME users (to do): a C/C++ tool that writes a patched copy of kbm's or
+   kbh's program CHD with the six root-directory records `fb_kbm_en` rewrites in the core
+   (`scripts/gen_kbm_en.py` finds them), reading the CHD through libchdr and writing a new CHD, never
+   the original. The copy's SHA1 differs from the set's, so MAME warns of wrong checksums. Done when MAME
+   boots the copy and shows the English Information boxes.
 
 Sets: all `firebeat_kbm`, BIOS `974a03.21e`; CHDs for every set on hand
 (`F:/Emulation/roms/MAME CHDs/kbm`, `kbm2nd`, `kbm3rd`; kbh's in `kbm`).
@@ -380,6 +465,8 @@ Decisions (user):
   both side by side once rotated. Both is stacked in the raster (512 x 768 in the game), so that the
   rotation puts them side by side (two 3:4 portraits, 3:2 overall; the driver's two screens are
   the evidence for the aspect), at twice the line rate. One screen is 3:4.
+  Both is out of the OSD for now (user): one engine cannot draw both GCUs in time (step 5); the
+  OSD is Left (default) or Right, on status bit 81.
 - **B. The XT446 (decided, user): an OSD choice of two paths.**
   - **MT32-pi.** chan1's TX, the bytes MAME sends to `xt446 midi_w` (F:1866), goes out of the user
     port as 31250-baud MIDI to an MT32-pi, on the pin the MiSTer cores with MT32-pi support use
@@ -398,6 +485,14 @@ Decisions (user):
   mode, as ppp (step 1); only the BIOS screens are 640 x 480 at 25.175 MHz. clk_sys 66.667 MHz
   stays the video clock: one screen clk_sys/4, both side by side (512 x 768, twice the line rate)
   clk_sys/2. The BIOS screens run at clk_sys/4 as ppp's do (`docs/HACKS.md`, the 31 kHz entry).
+- **D. A MIDI keyboard and an external XG synth (approved, user).** OSD UART mode MIDI, MidiLink
+  USB: the USB MIDI device's notes become key presses (`rtl/kbm_usbmidi.sv`: any channel, a
+  24-note window from note 0-96 in 12s, default 60, the game's own first note; one player, or
+  split with P2 the 24 notes above), and chan1's TX goes out of `UART_TXD` to the same device, for a
+  keyboard with XG voices, with Local Control Off (B0 7A 00) put in between messages at the start
+  and every 2 s (`rtl/kbm_midiout.sv`, bench `sim/midiout_tb`). OSD Notes to: the port (the bridge's mute bit silences arcsnd), both, or
+  arcsnd only. Bench `sim/usbmidi_tb` (a 61-key keyboard's capture through a CH345
+  cable: channel 1, notes 36-96, velocity 0x50, Note On 0 for off, clock and active sense).
 
 ## Memory plan (decided)
 

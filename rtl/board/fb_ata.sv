@@ -17,6 +17,7 @@ module fb_ata #(
     input  logic        clk,
     input  logic        reset,
     input  logic        por,            // power-on: the slots' discs survive a board reset
+    input  logic        kbm_en,         // [Firebeat] Keyboardmania's English instruction screens (fb_kbm_en)
 
     input  logic        req,            // held until ack
     input  logic        we,
@@ -80,7 +81,7 @@ logic [31:0] toc_start [2], rq_lba [2];
 logic [1:0]  toc_audio, rq_half;
 logic [3:0]  toc_ctl [2];
 logic [9:0]  bw_a [2];
-logic [15:0] bw_d [2];
+logic [15:0] bw_d [2], bw_s [2];
 logic [9:0]  play_smp [2];
 logic [1:0]  play_tick;
 logic [7:0]  vol0 [2], vol1 [2];
@@ -115,13 +116,21 @@ generate for (d = 0; d < 2; d++) begin : g_drv
         .have_disc(have[d]), .disc_new(dnew[d]), .ntrk(ntrk[d]), .toc_a(toc_a[d]),
         .toc_start(toc_start[d]), .toc_audio(toc_audio[d]), .toc_ctl(toc_ctl[d]),
         .rq(rq[d]), .rq_lba(rq_lba[d]), .rq_done(rq_done[d]),
-        .bw_we(bw_we[d]), .bw_a(bw_a[d]), .bw_d(bw_d[d]),
+        .bw_we(bw_we[d]), .bw_a(bw_a[d]), .bw_d(bw_s[d]),
         .play_on(play_on[d]), .play_lba(play_lba[d]), .play_smp(play_smp[d]), .play_tick(play_tick[d]),
         .vol0(vol0[d]), .vol1(vol1[d]), .cd_l(dl[d]), .cd_r(dr[d])
     );
+    if (d == 0) begin : g_en
+    fb_kbm_en u_en (
+        .clk, .reset(por || dnew[d]), .en(kbm_en), .rq_lba(rq_lba[d]),
+        .bw_we(bw_we[d]), .bw_a(bw_a[d]), .bw_d(bw_s[d]), .bw_q(bw_d[d])
+    );
+    end else begin : g_no_en
+    assign bw_d[d] = bw_s[d];
+    end
     end else begin : g_no_slot
     assign {have[d], dnew[d], ntrk[d], toc_start[d], toc_audio[d], toc_ctl[d], rq_done[d], bw_we[d],
-            bw_a[d], bw_d[d], dl[d], dr[d], sd_lba[d], sd_blk_cnt[d], sd_rd[d]} = '0;
+            bw_a[d], bw_s[d], bw_d[d], dl[d], dr[d], sd_lba[d], sd_blk_cnt[d], sd_rd[d]} = '0;
     end
 end endgenerate
 

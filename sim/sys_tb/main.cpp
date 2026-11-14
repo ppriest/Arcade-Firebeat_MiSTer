@@ -270,17 +270,19 @@ int main(int argc, char **argv) {
     }
     printf("upload: %llu clocks, %d bytes differ\n", (unsigned long long)(clocks - c0), ub);
 
-    // 3b. an RTC never started (DV 000) is not loaded: the RTC keeps what it had
+    // 3b. an RTC never started (DV 000) is loaded too: this is the ppp board (not POPN), which
+    // has no preset to keep, and whose saved RTC can hold good backup data with DV 000
     {
         std::vector<uint8_t> nz(NV_SIZE);
         for (size_t a = 0x600000; a < NV_SIZE; a++) nz[a] = rng();
         nz[0x600001] &= 0x8F;
         download(4, nz, 0, 0x600000);
         std::vector<uint8_t> u2 = upload(4, NV_SIZE, 0, 0x600000);
+        nz[0x600000] = 0; nz[0x600001] &= 0x70; nz[0x600002] &= 0x87;
         int nb = 0;
-        for (size_t a = 0x600000; a < NV_SIZE; a++) nb += u2[a] != nv[a];
-        if (nb) fail("an RTC with DV 000 was loaded: %d bytes changed", nb);
-        printf("RTC with DV 000: %d bytes changed\n", nb);
+        for (size_t a = 0x600000; a < NV_SIZE; a++) nb += u2[a] != nz[a];
+        if (nb) fail("an RTC with DV 000 was not loaded: %d bytes differ", nb);
+        printf("RTC with DV 000: loaded, %d bytes differ\n", nb);
     }
     // 3c. a short image (a file missing from the .mra) keeps the board in reset; the whole one
     // releases it (read with hold dropped for one evaluation, no clock)

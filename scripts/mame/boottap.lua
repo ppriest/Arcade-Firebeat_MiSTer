@@ -17,6 +17,7 @@ local events = os.getenv("CORE_EVENTS") or ""
 local m   = manager.machine
 local cpu = m.devices[":maincpu"]
 local sp  = cpu.spaces["program"]
+local scr = m.screens[":screen"] or m.screens[":lscreen"] -- kbm: lscreen, the main GCU's
 
 boottap_subs = {}
 boottap_err = nil
@@ -41,7 +42,7 @@ for _, r in ipairs({ { 0x40000000, 0x4000000f }, { 0x70000000, 0x7ff7ffff } }) d
 end
 
 boottap_subs[#boottap_subs + 1] = emu.add_machine_frame_notifier(function()
-    local f = m.screens[":screen"]:frame_number()
+    local f = scr:frame_number()
     for _, p in ipairs(pressed) do
         if f == p.f then m.ioport.ports[p.port]:field(p.mask):set_value(1); held[p] = f + p.len end
         if held[p] and f >= held[p] then m.ioport.ports[p.port]:field(p.mask):set_value(0); held[p] = nil end

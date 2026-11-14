@@ -5,7 +5,7 @@
     python scripts/fetch_dump.py FILE [--id "<core>|<build>|<set>"]
 
 FILE is mister_memdump of the dump's area (0x34000000, 0x2620000 bytes) then VRAM (0x30000000,
-32 MB), brought over with mister_get: sim/boot_tb's +state format. Writes FILE.txt (the header,
+32 MB, KBM 64 MB with the second GCU's), brought over with mister_get: sim/boot_tb's +state format. Writes FILE.txt (the header,
 CPU and slave-drive registers) and FILE.ata.txt (the slave's access log). --id labels them with the
 core that made the dump (mister_state). A dump is read back with the RTL of the build that made
 it: the register block's layout is generated from that commit (scripts/st_lists.py).
@@ -27,7 +27,7 @@ def main():
 
 def decode(out, pre):
     d = out.read_bytes()
-    if len(d) != DUMP_SIZE + VRAM_SIZE or struct.unpack_from("<I", d, 0)[0] != 0x46425344:
+    if len(d) not in (DUMP_SIZE + VRAM_SIZE, DUMP_SIZE + 2 * VRAM_SIZE) or struct.unpack_from("<I", d, 0)[0] != 0x46425344:
         sys.exit("%s: %d bytes or a bad header; fetch again" % (out, len(d)))
     r = lambda k: struct.unpack_from("<I", d, 0x1000 + 4 * k)[0]
     count = struct.unpack_from("<I", d, 4)[0]

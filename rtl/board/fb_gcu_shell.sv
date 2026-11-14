@@ -18,14 +18,19 @@
 // anything else 0xFFFFFFFF.
 //
 // vblank: at its start the IRQ rises if IRQ control bit 0 is set; a write of IRQ control with
-// bit 0 clear drops it.
+// bit 0 clear drops it and pulses irq_drop. irq_clr drops it too: on kbm both GCUs drive the one
+// IRQ0 line (firebeat.cpp gcu_interrupt), so the second GCU's clear clears the first's.
 //
 // The display registers go to fb_gcu_disp as written; reset gives them device_reset's values
 // (G:83-125): the CRTC at the table's mode 0, 640 x 480, every context empty with alpha 16.
 
-module fb_gcu_shell (
+module fb_gcu_shell #(
+    parameter logic [31:0] VBASE = 32'h3000_0000,  // the engine's VRAM in DDR3
+    parameter bit          ENG   = 1'b1            // 0: no engine here, e_* go to a shared one (kbm)
+) (
     input  logic        clk,
     input  logic        reset,
+    input  logic        skip,           // ENG: draw nothing (fb_gcu skip)
 
     input  logic        req,            // held until ack
     input  logic        we,
@@ -44,6 +49,8 @@ module fb_gcu_shell (
     input  logic        busy0,          // a DMA transfer feeds port 0 / 1 (status bits 1:0 / 3:2 read 0)
     input  logic        busy1,
     output logic        irq,
+    input  logic        irq_clr,
+    output logic        irq_drop,
 
     output logic        cmd_v,          // a command's four words, as fb_gcu receives them
     output logic        cmd_port,
@@ -63,6 +70,17 @@ module fb_gcu_shell (
     input  logic [31:0] m_rdata,
     input  logic [31:0] m_rdata_hi,
     output logic        gcu_idle,
+
+    // ENG = 0: the shared fb_gcu's side for this GCU (its idle, queue and read window)
+    output logic        e_push,
+    output logic [129:0] e_push_d,
+    input  logic        e_ready,
+    input  logic        e_idle_in,
+    output logic        e_rw_req,
+    output logic [22:0] e_rw_addr,
+    input  logic        e_rw_ack,
+    input  logic [31:0] e_rw_data,
+    output logic        p_hold,         // the probes: a port write waits for room in the queue
 
     output logic [2:0][31:0] crtc,      // registers 0x00-0x08 as written
     output logic [15:0] ctrl_lo,        // register 0x10's low half, the layer select
@@ -96,12 +114,25 @@ logic         r_on, r_ack;
 logic [22:0]  r_a;
 logic [31:0]  r_d;
 
-fb_gcu u_eng (
-    .clk, .reset, .push(q_push), .push_d(q_in), .ready(q_ready), .idle(e_idle),
+generate if (ENG) begin : g_eng
+fb_gcu #(.VBASE(VBASE)) u_eng (
+    .clk, .reset, .push(q_push), .push_d(q_in), .ready(q_ready), .idle(e_idle), .skip,
     .rw_req(r_on && e_idle), .rw_addr(r_a), .rw_ack(r_ack), .rw_data(r_d),
     .m_read, .m_write, .m_addr, .m_burst, .m_be, .m_wdata, .m_be_hi, .m_wdata_hi,
     .m_waitn, .m_rvalid, .m_rdata, .m_rdata_hi
 );
+assign {e_push, e_push_d, e_rw_req, e_rw_addr} = '0;
+end else begin : g_ext
+assign e_push = q_push;
+assign e_push_d = q_in;
+assign q_ready = e_ready;
+assign e_idle = e_idle_in;
+assign e_rw_req = r_on && e_idle;
+assign e_rw_addr = r_a;
+assign r_ack = e_rw_ack;
+assign r_d = e_rw_data;
+assign {m_read, m_write, m_addr, m_burst, m_be, m_wdata, m_be_hi, m_wdata_hi} = '0;
+end endgenerate
 assign gcu_idle = e_idle;
 
 wire q_full = !q_ready;
@@ -109,11 +140,14 @@ wire q_full = !q_ready;
 assign dg_ready = !q_full && !q_push;
 
 logic vb_q;
+assign p_hold = req && we && !ack && !r_on && (addr == 8'h70 || addr == 8'h74) && (q_full || q_push);
 always_ff @(posedge clk) begin
     ack <= 1'b0;
     cmd_v <= 1'b0;
     q_push <= 1'b0;
+    irq_drop <= 1'b0;
     vb_q <= vblank;
+    if (irq_clr) irq <= 1'b0;
     if (vblank && !vb_q && irqctrl[0]) irq <= 1'b1;
     if (r_ack) begin r_on <= 1'b0; rdata <= r_d; ack <= 1'b1; end
 
@@ -141,7 +175,7 @@ always_ff @(posedge clk) begin
             if (addr == 8'h6C && be[1:0] != 2'b00) reg_6c <= wdata[15:0];
             case (addr)
             8'h10: if (be[3:2] != 2'b00) begin
-                       if (!wdata[16]) irq <= 1'b0;
+                       if (!wdata[16]) begin irq <= 1'b0; irq_drop <= 1'b1; end
                        irqctrl <= wdata[31:16];
                    end
             8'h5C: rd_addr <= {1'b0, wdata[23:1]};
@@ -183,7 +217,7 @@ always_ff @(posedge clk) begin
     end
 
     if (reset) begin
-        irq <= 1'b0; irqctrl <= 16'h0; mode0 <= 16'h0; mode1 <= 16'h0; c0n <= 2'd0; c1n <= 2'd0;
+        irq <= 1'b0; irq_drop <= 1'b0; irqctrl <= 16'h0; mode0 <= 16'h0; mode1 <= 16'h0; c0n <= 2'd0; c1n <= 2'd0;
         r_on <= 1'b0; rd_addr <= '0; p0_addr <= '0; p1_addr <= '0;
         crtc_r[0] <= {16'd639, 8'd15, 8'd47};
         crtc_r[1] <= {16'd479, 8'd9, 8'd32};
@@ -198,41 +232,41 @@ always_ff @(posedge clk) begin
     6'h0: ack <= ($bits(ack))'(st_wd);
     6'h1: cmd_v <= ($bits(cmd_v))'(st_wd);
     6'h2: q_push <= ($bits(q_push))'(st_wd);
-    6'h3: vb_q <= ($bits(vb_q))'(st_wd);
-    6'h4: irq <= ($bits(irq))'(st_wd);
-    6'h5: r_on <= ($bits(r_on))'(st_wd);
-    6'h6: rdata <= ($bits(rdata))'(st_wd);
-    6'h7: r_a <= ($bits(r_a))'(st_wd);
-    6'h8: crtc_r[0] <= ($bits(crtc_r[0]))'(st_wd);
-    6'h9: crtc_r[1] <= ($bits(crtc_r[1]))'(st_wd);
-    6'hA: crtc_r[2] <= ($bits(crtc_r[2]))'(st_wd);
-    6'hB: layer <= ($bits(layer))'(st_wd);
-    6'hC: fr_alpha[0] <= ($bits(fr_alpha[0]))'(st_wd);
-    6'hD: fr_alpha[1] <= ($bits(fr_alpha[1]))'(st_wd);
-    6'hE: fr_alpha[2] <= ($bits(fr_alpha[2]))'(st_wd);
-    6'hF: fr_alpha[3] <= ($bits(fr_alpha[3]))'(st_wd);
-    6'h10: fr_h[0] <= ($bits(fr_h[0]))'(st_wd);
-    6'h11: fr_h[1] <= ($bits(fr_h[1]))'(st_wd);
-    6'h12: fr_h[2] <= ($bits(fr_h[2]))'(st_wd);
-    6'h13: fr_h[3] <= ($bits(fr_h[3]))'(st_wd);
-    6'h14: fr_y[0] <= ($bits(fr_y[0]))'(st_wd);
-    6'h15: fr_y[1] <= ($bits(fr_y[1]))'(st_wd);
-    6'h16: fr_y[2] <= ($bits(fr_y[2]))'(st_wd);
-    6'h17: fr_y[3] <= ($bits(fr_y[3]))'(st_wd);
-    6'h18: fr_w[0] <= ($bits(fr_w[0]))'(st_wd);
-    6'h19: fr_w[1] <= ($bits(fr_w[1]))'(st_wd);
-    6'h1A: fr_w[2] <= ($bits(fr_w[2]))'(st_wd);
-    6'h1B: fr_w[3] <= ($bits(fr_w[3]))'(st_wd);
-    6'h1C: fr_x[0] <= ($bits(fr_x[0]))'(st_wd);
-    6'h1D: fr_x[1] <= ($bits(fr_x[1]))'(st_wd);
-    6'h1E: fr_x[2] <= ($bits(fr_x[2]))'(st_wd);
-    6'h1F: fr_x[3] <= ($bits(fr_x[3]))'(st_wd);
-    6'h20: fr_base[0] <= ($bits(fr_base[0]))'(st_wd);
-    6'h21: fr_base[1] <= ($bits(fr_base[1]))'(st_wd);
-    6'h22: fr_base[2] <= ($bits(fr_base[2]))'(st_wd);
-    6'h23: fr_base[3] <= ($bits(fr_base[3]))'(st_wd);
-    6'h24: reg_6c <= ($bits(reg_6c))'(st_wd);
-    6'h25: irqctrl <= ($bits(irqctrl))'(st_wd);
+    6'h3: irq_drop <= ($bits(irq_drop))'(st_wd);
+    6'h4: vb_q <= ($bits(vb_q))'(st_wd);
+    6'h5: irq <= ($bits(irq))'(st_wd);
+    6'h6: r_on <= ($bits(r_on))'(st_wd);
+    6'h7: rdata <= ($bits(rdata))'(st_wd);
+    6'h8: r_a <= ($bits(r_a))'(st_wd);
+    6'h9: crtc_r[0] <= ($bits(crtc_r[0]))'(st_wd);
+    6'hA: crtc_r[1] <= ($bits(crtc_r[1]))'(st_wd);
+    6'hB: crtc_r[2] <= ($bits(crtc_r[2]))'(st_wd);
+    6'hC: layer <= ($bits(layer))'(st_wd);
+    6'hD: fr_alpha[0] <= ($bits(fr_alpha[0]))'(st_wd);
+    6'hE: fr_alpha[1] <= ($bits(fr_alpha[1]))'(st_wd);
+    6'hF: fr_alpha[2] <= ($bits(fr_alpha[2]))'(st_wd);
+    6'h10: fr_alpha[3] <= ($bits(fr_alpha[3]))'(st_wd);
+    6'h11: fr_h[0] <= ($bits(fr_h[0]))'(st_wd);
+    6'h12: fr_h[1] <= ($bits(fr_h[1]))'(st_wd);
+    6'h13: fr_h[2] <= ($bits(fr_h[2]))'(st_wd);
+    6'h14: fr_h[3] <= ($bits(fr_h[3]))'(st_wd);
+    6'h15: fr_y[0] <= ($bits(fr_y[0]))'(st_wd);
+    6'h16: fr_y[1] <= ($bits(fr_y[1]))'(st_wd);
+    6'h17: fr_y[2] <= ($bits(fr_y[2]))'(st_wd);
+    6'h18: fr_y[3] <= ($bits(fr_y[3]))'(st_wd);
+    6'h19: fr_w[0] <= ($bits(fr_w[0]))'(st_wd);
+    6'h1A: fr_w[1] <= ($bits(fr_w[1]))'(st_wd);
+    6'h1B: fr_w[2] <= ($bits(fr_w[2]))'(st_wd);
+    6'h1C: fr_w[3] <= ($bits(fr_w[3]))'(st_wd);
+    6'h1D: fr_x[0] <= ($bits(fr_x[0]))'(st_wd);
+    6'h1E: fr_x[1] <= ($bits(fr_x[1]))'(st_wd);
+    6'h1F: fr_x[2] <= ($bits(fr_x[2]))'(st_wd);
+    6'h20: fr_x[3] <= ($bits(fr_x[3]))'(st_wd);
+    6'h21: fr_base[0] <= ($bits(fr_base[0]))'(st_wd);
+    6'h22: fr_base[1] <= ($bits(fr_base[1]))'(st_wd);
+    6'h23: fr_base[2] <= ($bits(fr_base[2]))'(st_wd);
+    6'h24: fr_base[3] <= ($bits(fr_base[3]))'(st_wd);
+    6'h25: reg_6c <= ($bits(reg_6c))'(st_wd);
     6'h26: rd_addr <= ($bits(rd_addr))'(st_wd);
     6'h27: p0_addr <= ($bits(p0_addr))'(st_wd);
     6'h28: p1_addr <= ($bits(p1_addr))'(st_wd);
@@ -258,6 +292,7 @@ always_ff @(posedge clk) begin
     6'h3C: c1[2] <= ($bits(c1[2]))'(st_wd);
     6'h3D: c1[3] <= ($bits(c1[3]))'(st_wd);
     6'h3E: c1n <= ($bits(c1n))'(st_wd);
+    6'h3F: irqctrl <= ($bits(irqctrl))'(st_wd);
     default: ;
     endcase
 `endif  // st_lists: write
@@ -275,41 +310,41 @@ always_comb begin
     6'h0: st_d = 32'(ack);
     6'h1: st_d = 32'(cmd_v);
     6'h2: st_d = 32'(q_push);
-    6'h3: st_d = 32'(vb_q);
-    6'h4: st_d = 32'(irq);
-    6'h5: st_d = 32'(r_on);
-    6'h6: st_d = 32'(rdata);
-    6'h7: st_d = 32'(r_a);
-    6'h8: st_d = 32'(crtc_r[0]);
-    6'h9: st_d = 32'(crtc_r[1]);
-    6'hA: st_d = 32'(crtc_r[2]);
-    6'hB: st_d = 32'(layer);
-    6'hC: st_d = 32'(fr_alpha[0]);
-    6'hD: st_d = 32'(fr_alpha[1]);
-    6'hE: st_d = 32'(fr_alpha[2]);
-    6'hF: st_d = 32'(fr_alpha[3]);
-    6'h10: st_d = 32'(fr_h[0]);
-    6'h11: st_d = 32'(fr_h[1]);
-    6'h12: st_d = 32'(fr_h[2]);
-    6'h13: st_d = 32'(fr_h[3]);
-    6'h14: st_d = 32'(fr_y[0]);
-    6'h15: st_d = 32'(fr_y[1]);
-    6'h16: st_d = 32'(fr_y[2]);
-    6'h17: st_d = 32'(fr_y[3]);
-    6'h18: st_d = 32'(fr_w[0]);
-    6'h19: st_d = 32'(fr_w[1]);
-    6'h1A: st_d = 32'(fr_w[2]);
-    6'h1B: st_d = 32'(fr_w[3]);
-    6'h1C: st_d = 32'(fr_x[0]);
-    6'h1D: st_d = 32'(fr_x[1]);
-    6'h1E: st_d = 32'(fr_x[2]);
-    6'h1F: st_d = 32'(fr_x[3]);
-    6'h20: st_d = 32'(fr_base[0]);
-    6'h21: st_d = 32'(fr_base[1]);
-    6'h22: st_d = 32'(fr_base[2]);
-    6'h23: st_d = 32'(fr_base[3]);
-    6'h24: st_d = 32'(reg_6c);
-    6'h25: st_d = 32'(irqctrl);
+    6'h3: st_d = 32'(irq_drop);
+    6'h4: st_d = 32'(vb_q);
+    6'h5: st_d = 32'(irq);
+    6'h6: st_d = 32'(r_on);
+    6'h7: st_d = 32'(rdata);
+    6'h8: st_d = 32'(r_a);
+    6'h9: st_d = 32'(crtc_r[0]);
+    6'hA: st_d = 32'(crtc_r[1]);
+    6'hB: st_d = 32'(crtc_r[2]);
+    6'hC: st_d = 32'(layer);
+    6'hD: st_d = 32'(fr_alpha[0]);
+    6'hE: st_d = 32'(fr_alpha[1]);
+    6'hF: st_d = 32'(fr_alpha[2]);
+    6'h10: st_d = 32'(fr_alpha[3]);
+    6'h11: st_d = 32'(fr_h[0]);
+    6'h12: st_d = 32'(fr_h[1]);
+    6'h13: st_d = 32'(fr_h[2]);
+    6'h14: st_d = 32'(fr_h[3]);
+    6'h15: st_d = 32'(fr_y[0]);
+    6'h16: st_d = 32'(fr_y[1]);
+    6'h17: st_d = 32'(fr_y[2]);
+    6'h18: st_d = 32'(fr_y[3]);
+    6'h19: st_d = 32'(fr_w[0]);
+    6'h1A: st_d = 32'(fr_w[1]);
+    6'h1B: st_d = 32'(fr_w[2]);
+    6'h1C: st_d = 32'(fr_w[3]);
+    6'h1D: st_d = 32'(fr_x[0]);
+    6'h1E: st_d = 32'(fr_x[1]);
+    6'h1F: st_d = 32'(fr_x[2]);
+    6'h20: st_d = 32'(fr_x[3]);
+    6'h21: st_d = 32'(fr_base[0]);
+    6'h22: st_d = 32'(fr_base[1]);
+    6'h23: st_d = 32'(fr_base[2]);
+    6'h24: st_d = 32'(fr_base[3]);
+    6'h25: st_d = 32'(reg_6c);
     6'h26: st_d = 32'(rd_addr);
     6'h27: st_d = 32'(p0_addr);
     6'h28: st_d = 32'(p1_addr);
@@ -335,6 +370,7 @@ always_comb begin
     6'h3C: st_d = 32'(c1[2]);
     6'h3D: st_d = 32'(c1[3]);
     6'h3E: st_d = 32'(c1n);
+    6'h3F: st_d = 32'(irqctrl);
     default: ;
     endcase
 end

@@ -57,7 +57,7 @@ module fb_atapi #(
     input  logic        disc_new,
     input  logic [6:0]  ntrk,
     output logic [6:0]  toc_a,          // entry ntrk is the lead-out
-    input  logic [31:0] toc_start,
+    input  logic [31:0] toc_start,      // toc_a's entry, the clock after
     input  logic        toc_audio,
     input  logic [3:0]  toc_ctl,
 
@@ -541,14 +541,16 @@ logic        f_half_r;                  // the half a response or sector is in
 logic [31:0] a_len_n;
 assign f_dhalf = f_half_r;
 
-// TOC lookups (asynchronous in fb_ata), registered here: the entry's fields are used the clock
-// after toc_sel names it, so every state that reads one spends a clock (tw) waiting for it
+// TOC lookups: the source registers the entry (fb_cd_slot's block RAM), so its fields arrive the
+// clock after toc_sel names it, and every state that reads one spends a clock (tw) waiting for it
 logic [6:0] toc_sel;
 assign toc_a = toc_sel;
 logic [31:0] tstart;
 logic        taud, tw;
 logic [3:0]  tctl;
-always_ff @(posedge clk) begin tstart <= toc_start; taud <= toc_audio; tctl <= toc_ctl; end
+assign tstart = toc_start;
+assign taud   = toc_audio;
+assign tctl   = toc_ctl;
 // the next track's start, for searches
 logic [6:0] t_next;
 

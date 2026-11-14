@@ -9,6 +9,11 @@ module tb_cdaudio (
     input  logic        sd_ack, sd_buff_wr,
     input  logic [15:0] sd_buff_dout,
     output logic        have_disc,
+    output logic [6:0]  ntrk,
+    input  logic [6:0]  toc_a,
+    output logic [31:0] toc_start,
+    output logic        toc_audio,
+    output logic [3:0]  toc_ctl,
     input  logic        rq,
     input  logic [31:0] rq_lba,
     output logic        rq_done, bw_we,
@@ -22,8 +27,8 @@ module tb_cdaudio (
 );
 fb_cd_slot u (
     .clk, .reset, .brd_reset(1'b0), .mounted, .img_size, .sd_lba, .sd_blk_cnt, .sd_rd, .sd_ack,
-    .sd_buff_wr, .sd_buff_dout, .have_disc, .disc_new(), .ntrk(), .toc_a(7'd0), .toc_start(),
-    .toc_audio(), .toc_ctl(), .rq, .rq_lba, .rq_done, .bw_we, .bw_a, .bw_d,
+    .sd_buff_wr, .sd_buff_dout, .have_disc, .disc_new(), .ntrk, .toc_a, .toc_start,
+    .toc_audio, .toc_ctl, .rq, .rq_lba, .rq_done, .bw_we, .bw_a, .bw_d,
     .play_on, .play_lba, .play_smp, .play_tick, .vol0, .vol1, .cd_l, .cd_r
 );
 endmodule

@@ -2,13 +2,16 @@
 //
 // The GCU (fb_gcu_shell with fb_gcu) on hornet_ddr3, its DDRAM port and register bus driven by
 // main.cpp. Master 1, served first as in firebeat_sys, is fb_gcu_disp on the shell's registers,
-// running when scan is set.
+// running when scan is set; with stacked, Keyboardmania's stacked mode with this GCU's registers as
+// both screens' (the second reading the model's second VRAM), for its late lines.
 
 module tb_gcu (
     input  logic         clk,
     input  logic         reset,         // the GCU's
     input  logic         por,           // hornet_ddr3's: power-up only
     input  logic         scan,
+    input  logic         skip,           // fb_gcu skip
+    input  logic         stacked,        // scan-out shows both screens stacked (KBM), both this GCU's
 
     input  logic         req,
     input  logic         we,
@@ -20,6 +23,7 @@ module tb_gcu (
     output logic         gcu_idle,
     output logic         cmd_v,
     output logic [31:0]  dbg,               // the engine's state, for a bench that stalls
+    output logic [10:0]  prof,              // {its DDR3 port waiting, ret, st}, for +prof
     output logic         ce_pix,
     output logic [7:0]   vid_r, vid_g, vid_b,
     output logic         vid_hs, vid_vs, vid_hb, vid_vb,
@@ -43,7 +47,7 @@ logic [1:0][10:0] d_burst;
 logic [31:0]      d_rdata, d_rdata_hi;
 
 fb_gcu_shell u_gcu (
-    .clk, .reset, .req, .we, .addr, .be, .wdata, .ack, .rdata,
+    .clk, .reset, .skip, .req, .we, .addr, .be, .wdata, .ack, .rdata,
     .dg_we(1'b0), .dg_port(1'b0), .dg_data(32'd0), .dg_ready(),
     .vblank(1'b0), .busy0(1'b0), .busy1(1'b0), .irq(),
     .cmd_v, .cmd_port(), .cmd(),
@@ -59,8 +63,10 @@ logic [15:0]      layer, reg_6c;
 logic [3:0][15:0] fr_alpha, fr_x, fr_y, fr_w, fr_h;
 logic [3:0][31:0] fr_base;
 
-fb_gcu_disp u_disp (
-    .clk, .reset(por || !scan), .test(1'b0),
+fb_gcu_disp #(.KBM(1'b1)) u_disp (
+    .clk, .reset(por || !scan), .test(1'b0), .flip(1'b0), .screen(stacked ? 2'd2 : 2'd0),
+    .b_crtc(crtc), .b_layer(layer), .b_alpha(fr_alpha), .b_x(fr_x), .b_y(fr_y), .b_w(fr_w), .b_h(fr_h),
+    .b_base(fr_base), .b_6c(reg_6c),
     .crtc, .layer, .fr_alpha, .fr_x, .fr_y, .fr_w, .fr_h, .fr_base, .reg_6c,
     .m_read(d_read[1]), .m_addr(d_maddr[1]), .m_burst(d_burst[1]), .m_waitn(d_waitn[1]),
     .m_rvalid(d_rvalid[1]), .m_rdata(d_rdata), .m_rdata_hi(d_rdata_hi),
@@ -80,7 +86,9 @@ hornet_ddr3 #(.N(2), .WIDE(2'b11), .PRI(0)) u_ddr3 (
     .DDRAM_DIN, .DDRAM_BE, .DDRAM_WE, .dbg(), .dbg_cmd()
 );
 
-assign dbg = {3'd0, 5'(u_gcu.u_eng.st), u_gcu.u_eng.rd_iss[7:0], u_gcu.u_eng.rd_rcv[7:0],
-              u_gcu.u_eng.wr_on, u_gcu.u_eng.wr_kill, 2'(u_ddr3.as), 4'(u_gcu.u_eng.q_cnt)};
+assign dbg = {3'd0, 5'(u_gcu.g_eng.u_eng.st), u_gcu.g_eng.u_eng.rd_iss[7:0], u_gcu.g_eng.u_eng.rd_rcv[7:0],
+              u_gcu.g_eng.u_eng.wr_on, u_gcu.g_eng.u_eng.wr_kill, 2'(u_ddr3.as), 4'(u_gcu.g_eng.u_eng.q_cnt)};
+assign prof = {(u_gcu.g_eng.u_eng.m_read || u_gcu.g_eng.u_eng.m_write) && !u_gcu.g_eng.u_eng.m_waitn,
+               5'(u_gcu.g_eng.u_eng.ret), 5'(u_gcu.g_eng.u_eng.st)};
 
 endmodule

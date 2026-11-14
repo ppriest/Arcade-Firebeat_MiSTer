@@ -30,6 +30,9 @@ module ppc403_core #(
     input  logic        reset,
     input  logic        ce,          // core step enable
     input  logic        tb_tick,     // timebase increment (the board's CPU clock, 32 MHz)
+    output logic        wd_reset,    // [Firebeat] the watchdog's reset (TCR WRC), a clock's pulse
+    output logic [31:0] tcr_o,       // [Firebeat] TCR and TSR, for a probe
+    output logic [31:0] tsr_o,
 
     output logic        i_req,
     output logic [30:0] i_addr,
@@ -63,6 +66,8 @@ module ppc403_core #(
     input  logic [31:0] dcr_rdata,
 
     input  logic [4:0]  ext_irq,     // IRQ0..4, high = asserted
+    input  logic [4:0]  ext_rise,    // [Firebeat] an edge-mode latch with no level change: a line
+                                     // MAME asserts and clears inside one device call
     input  logic [8:0]  int_irq,     // level sources, as line_bits places them on MAME's EXISR bits
                                      // ([Firebeat] corrected): [0] critical, [2] SPU rx, [1] SPU tx,
                                      // [4] JTAG rx, [3] JTAG tx, [8] DMA0, [7] DMA1, [6] DMA2, [5] DMA3
@@ -155,10 +160,12 @@ localparam logic [31:0] MSR_CE = 32'h0002_0000;
 localparam logic [31:0] MSR_DE = 32'h0000_0200;
 localparam logic [31:0] MSR_PE = 32'h0000_0008;
 
+localparam logic [31:0] TCR_WIE = 32'h0800_0000;
 localparam logic [31:0] TCR_PIE = 32'h0400_0000;
 localparam logic [31:0] TCR_FIE = 32'h0080_0000;
 localparam logic [31:0] TCR_ARE = 32'h0040_0000;
 localparam logic [31:0] TCR_WRC = 32'h3000_0000;
+localparam logic [31:0] TSR_ENW = 32'h8000_0000;
 localparam logic [31:0] TSR_WIS = 32'h4000_0000;
 localparam logic [31:0] TSR_PIS = 32'h0800_0000;
 localparam logic [31:0] TSR_FIS = 32'h0400_0000;
@@ -652,6 +659,8 @@ assign i_req  = (!f_out || i_ack) && ({1'b0, q_n} + {2'b0, f_ack_ok} <= 3'd2);
 assign i_addr = fetch_pc[30:0];
 assign i_a31  = fetch_pc[31];
 assign iccr_o = iccr;
+assign tcr_o = tcr;
+assign tsr_o = tsr;
 assign dccr_o = dccr;
 assign dcwr_o = dcwr;
 
@@ -711,6 +720,8 @@ wire        br_ctr  = ir[23] || ((ctr_dec != 0) ^ ir[22]);
 wire        br_cond = ir[25] || (bi_bit == ir[24]);
 
 wire [31:0] fit_mask = (32'h200 << {tcr[25:24], 2'b00}) - 32'd1;
+// [Firebeat] the watchdog's period, 2^17, 2^21, 2^25 or 2^29 timebase ticks (TCR WP); MAME has none
+wire [31:0] wd_mask = (32'h2_0000 << {tcr[31:30], 2'b00}) - 32'd1;
 
 // ---------------------------------------------------------------------------------------
 // Sequential
@@ -747,13 +758,14 @@ logic [2:0]  o_z;            // [Firebeat] the operand is still zero from reset:
 logic [31:0] w1_q, w2_q;
 
 always_ff @(posedge clk) begin
+    wd_reset <= 1'b0;
     // external interrupt lines: edge-set, level-mirror (ppccom.cpp:2539-2572)
     irqstate <= ext_irq;
     begin
         logic [31:0] rise, nx;
         rise = {27'h0, ext_irq[0] & ~irqstate[0], ext_irq[1] & ~irqstate[1],
                 ext_irq[2] & ~irqstate[2], ext_irq[3] & ~irqstate[3], ext_irq[4] & ~irqstate[4]};
-        nx = exisr | rise;
+        nx = exisr | rise | {27'h0, ext_rise[0], ext_rise[1], ext_rise[2], ext_rise[3], ext_rise[4]};
         exisr <= (nx & ~level_mask) | (line_bits & level_mask);
     end
 
@@ -771,6 +783,15 @@ always_ff @(posedge clk) begin
         // MAME fires one tick after the timebase crosses a multiple of the period
         if ((tcr & TCR_FIE) != 0 && ((tb[31:0] & fit_mask) == 32'h0))
             tsr <= tsr | TSR_FIS;
+        // [Firebeat] the watchdog (PPC403GCX manual): a period's end sets ENW, the next WIS, the
+        // next resets as WRC says. The games reset the board this way (TCR WRC 3, WP 0), leaving
+        // Test. The long periods (WP 2, 3) never reset, as MAME (HACKS.md): kbm2nd's kick, an idle
+        // task (0x800034CC), starves for over a second while LOADING DATA on this core.
+        if ((tb[31:0] & wd_mask) == 32'h0) begin
+            if ((tsr & TSR_ENW) == 0) tsr <= tsr | TSR_ENW;
+            else if ((tsr & TSR_WIS) == 0) tsr <= tsr | TSR_WIS;
+            else if ((tcr & TCR_WRC) != 0 && !tcr[31]) wd_reset <= 1'b1;
+        end
     end
 
     w1_en = 1'b0; w1_idx = rd; w1_val = 32'h0;
@@ -812,7 +833,7 @@ always_ff @(posedge clk) begin
             if ((tsr & TSR_FIS) != 0) v = 12'h010;          // 0x1010
             if ((exisr & exier) != 0) v = 12'h500;
             redirect = 1'b1;
-            if ((tsr & TSR_WIS) != 0) begin
+            if ((tsr & TSR_WIS) != 0 && (tcr & TCR_WIE) != 0) begin   // [Firebeat] WIE: WIS is now set
                 srr2 <= xin_pc; srr3 <= msr;
                 msr  <= (msr & ~(MSR_WE | MSR_PR | MSR_CE | MSR_EE | MSR_DE | MSR_PE))
                         & ~32'h1 | {31'h0, msr[16]};
@@ -929,7 +950,7 @@ always_ff @(posedge clk) begin
                     10'h3d7: cdbcr <= vs;
                     10'h3d8: tsr <= tsr & ~vs;
                     10'h3da: begin
-                        tcr <= (vs & ~TCR_WRC) | (tcr & TCR_WRC);
+                        tcr <= vs | (tcr & TCR_WRC);   // WRC set until reset (ppccom.cpp:2341)
                         // MAME restarts the PIT when PIE changes (ppccom.cpp:2206-2208)
                         if (((tcr ^ vs) & TCR_PIE) != 0)
                             pit_count <= ((vs & TCR_PIE) != 0 && pit_reload != 0)

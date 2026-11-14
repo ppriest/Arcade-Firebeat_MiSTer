@@ -23,13 +23,35 @@
 // test: the Phase 1 test picture instead of the registers: mode 1, one 512 x 384 context at VRAM 0.
 //
 // Pixel clock: clk / 4 (16.667 MHz, the 24 kHz mode; HACKS for 31 kHz).
+//
+// KBM: two GCUs on one output, the second's registers on b_* and its VRAM at BASE + 32 MB. screen
+// 0 shows the first, 1 the second, 2 both stacked: twice the lines at clk / 2, the same frame, one
+// screen's lines then the other's from the same engine, by the first GCU's CRTC (HACKS). Taken at
+// the frame's wrap.
+//
+// flip: the picture turned 180 degrees, for HDMI and analog alike: lines are built bottom first and
+// each is read out right to left. Stacked, the second screen then shows on top. Taken at the
+// frame's wrap.
 
 module fb_gcu_disp #(
-    parameter logic [31:0] BASE = 32'h3000_0000
+    parameter logic [31:0] BASE = 32'h3000_0000,
+    parameter bit          KBM = 1'b0
 ) (
     input  logic             clk,
     input  logic             reset,
     input  logic             test,
+    input  logic [1:0]       screen,
+    input  logic             flip,
+
+    input  logic [2:0][31:0] b_crtc,
+    input  logic [15:0]      b_layer,
+    input  logic [3:0][15:0] b_alpha,
+    input  logic [3:0][15:0] b_x,
+    input  logic [3:0][15:0] b_y,
+    input  logic [3:0][15:0] b_w,
+    input  logic [3:0][15:0] b_h,
+    input  logic [3:0][31:0] b_base,
+    input  logic [15:0]      b_6c,
 
     input  logic [2:0][31:0] crtc,
     input  logic [15:0]      layer,
@@ -64,9 +86,24 @@ logic [2:0][31:0] c_crtc;
 logic [15:0]      c_layer, c_6c;
 logic [3:0][15:0] c_alpha, c_x, c_y, c_w, c_h;
 logic [3:0][31:0] c_base;
+logic [1:0]       scr;                       // screen, as of the frame's wrap
+logic             fl;                        // flip, as of the frame's wrap
+wire              stack = KBM && scr == 2'd2;
+logic [11:0]      half;                      // stack: the second screen's first line
+logic [11:0]      pn;                        // the next line to build, as shown
+logic [11:0]      vvis;
+wire  [11:0]      pl = fl ? vvis - 12'd1 - pn : pn;   // ... its line in the unflipped picture
+wire              use_b = KBM && (scr == 2'd1 || (stack && pl >= half));
 always_comb begin
-    c_crtc = crtc; c_layer = layer; c_6c = reg_6c;
-    c_alpha = fr_alpha; c_x = fr_x; c_y = fr_y; c_w = fr_w; c_h = fr_h; c_base = fr_base;
+    c_crtc = (KBM && scr == 2'd1) ? b_crtc : crtc;
+    c_layer = use_b ? b_layer : layer;
+    c_6c = use_b ? b_6c : reg_6c;
+    c_alpha = use_b ? b_alpha : fr_alpha;
+    c_x = use_b ? b_x : fr_x;
+    c_y = use_b ? b_y : fr_y;
+    c_w = use_b ? b_w : fr_w;
+    c_h = use_b ? b_h : fr_h;
+    c_base = use_b ? b_base : fr_base;
     if (test) begin
         c_crtc = {32'h5F03_0064, 32'h017F_0515, 32'h01FF_0447};
         c_layer = 16'h0000; c_6c = 16'h0000;
@@ -84,18 +121,22 @@ wire [11:0] r_vfp  = 12'(c_crtc[1][15:8]) + 12'd1;
 wire [11:0] r_vbp  = 12'(c_crtc[1][7:0]) + 12'd1;
 wire [11:0] r_hsy  = 12'(c_crtc[2][31:24]) + 12'd1;
 wire [11:0] r_vsy  = 12'(c_crtc[2][23:16]) + 12'd1;
+wire        n_stack = KBM && screen == 2'd2;    // the next frame's
+wire [11:0] n_vs0   = r_vvis + r_vfp;
+wire [11:0] n_vs1   = n_vs0 + r_vsy;
+wire [11:0] n_vt    = n_vs1 + r_vbp;
 
 // ------------------------------------------------------------------------------------------
 // timing: visible, front porch, sync, back porch; syncs active high
 // ------------------------------------------------------------------------------------------
 
-logic [11:0] hvis, hs0, hs1, hlast, vvis, vs0, vs1, vlast;
+logic [11:0] hvis, hs0, hs1, hlast, vs0, vs1, vlast;
 logic [11:0] h, v;
 logic [1:0]  div;
 logic        line_start;
 always_ff @(posedge clk) begin
     div <= div + 2'd1;
-    ce_pix <= div == 2'd3;
+    ce_pix <= stack ? div[0] : div == 2'd3;
     line_start <= 1'b0;
     if (ce_pix) begin
         if (h == hlast) begin
@@ -105,8 +146,13 @@ always_ff @(posedge clk) begin
                 v <= 12'd0;
                 hvis <= r_hvis; hs0 <= r_hvis + r_hfp; hs1 <= r_hvis + r_hfp + r_hsy;
                 hlast <= r_hvis + r_hfp + r_hsy + r_hbp - 12'd1;
-                vvis <= r_vvis; vs0 <= r_vvis + r_vfp; vs1 <= r_vvis + r_vfp + r_vsy;
-                vlast <= r_vvis + r_vfp + r_vsy + r_vbp - 12'd1;
+                scr <= screen;
+                fl <= flip;
+                half <= r_vvis;
+                vvis <= n_stack ? r_vvis << 1 : r_vvis;
+                vs0 <= n_stack ? n_vs0 << 1 : n_vs0;
+                vs1 <= n_stack ? n_vs1 << 1 : n_vs1;
+                vlast <= (n_stack ? n_vt << 1 : n_vt) - 12'd1;
             end else v <= v + 12'd1;
         end else h <= h + 12'd1;
     end
@@ -114,8 +160,9 @@ always_ff @(posedge clk) begin
         div <= 2'd0; h <= 12'd0; v <= 12'd0;
         hvis <= r_hvis; hs0 <= r_hvis + r_hfp; hs1 <= r_hvis + r_hfp + r_hsy;
         hlast <= r_hvis + r_hfp + r_hsy + r_hbp - 12'd1;
-        vvis <= r_vvis; vs0 <= r_vvis + r_vfp; vs1 <= r_vvis + r_vfp + r_vsy;
-        vlast <= r_vvis + r_vfp + r_vsy + r_vbp - 12'd1;
+        vvis <= r_vvis; vs0 <= n_vs0; vs1 <= n_vs1;
+        vlast <= n_vt - 12'd1;
+        scr <= 2'd0; fl <= 1'b0; half <= r_vvis;
     end
 end
 
@@ -163,9 +210,10 @@ logic [11:0]      l_hvis, l_vvis;
 typedef enum logic [3:0] { F_IDLE, F_DIV, F_CLR, F_SLOT, F_SL1, F_SL2, F_SL3, F_REQ, F_RCV } fst_t;
 fst_t        fs;
 logic        pend;                           // a line's build waits for the previous one
-logic [11:0] pn;                             // ... that line
 logic        w_v, w2_v;                      // a beat's pixels on their way to the buffer
-logic [11:0] n;                              // the line being built
+logic [11:0] n;                              // the row being built, in its screen
+logic        nb;                             // ... the line's half of the buffer
+logic        l_b;                            // ... from the second GCU's VRAM
 logic [1:0]  s;                              // its slot
 logic [8:0]  ci;                             // clear row, divider step
 logic [8:0]  dq;                             // divider: quotient, remainder
@@ -220,9 +268,11 @@ always_ff @(posedge clk) begin
     case (fs)
     F_IDLE: if (pend && !w_v && !w2_v) begin
         pend <= 1'b0;
-        n <= pn;
+        n <= (stack && pl >= half) ? pl - half : pl;
+        nb <= pn[0];
         ci <= '0;
-        if (pn == 12'd0) begin
+        if (pn == 12'd0 || (stack && pn == half)) begin
+            l_b <= use_b;
             l_layer <= c_layer;
             l_tv <= (c_6c[3:0] != 4'd0) && c_6c != 16'h0FFF;
             l_x <= c_x; l_y <= c_y; l_w <= c_w; l_h <= c_h; l_base <= c_base;
@@ -289,7 +339,7 @@ always_ff @(posedge clk) begin
 
     F_REQ: if (!m_read) begin
         m_read <= 1'b1;
-        m_addr <= BASE + {7'd0, sb, 3'd0};
+        m_addr <= BASE + {6'd0, l_b, sb, 3'd0};
         m_burst <= {2'd0, chunk, 1'b0};
         sch <= chunk;
         sb <= sb + 22'(chunk);
@@ -314,7 +364,7 @@ always_ff @(posedge clk) begin
 
     if (reset) begin
         fs <= F_IDLE; pend <= 1'b0; m_read <= 1'b0; late <= '0;
-        l_layer <= '0; l_w <= '0; l_h <= '0; l_hvis <= 12'd512; l_vvis <= 12'd384;
+        l_layer <= '0; l_w <= '0; l_h <= '0; l_hvis <= 12'd512; l_vvis <= 12'd384; l_b <= 1'b0;
     end
 end
 
@@ -351,12 +401,12 @@ always_comb begin
     lb_wd = '0;
     if (fs == F_CLR) begin
         lb_we = 4'hF;
-        for (int k = 0; k < 4; k++) lb_wa[k] = {n[0], ci[7:0]};
+        for (int k = 0; k < 4; k++) lb_wa[k] = {nb, ci[7:0]};
     end else
         for (int q = 0; q < 4; q++)
             if (wok2[q]) begin
                 lb_we[wx2[q][1:0]] = 1'b1;
-                lb_wa[wx2[q][1:0]] = {n[0], wx2[q][9:2]};
+                lb_wa[wx2[q][1:0]] = {nb, wx2[q][9:2]};
                 lb_wd[wx2[q][1:0]] = {1'b1, sf2, wpix2[q][14:0]};
             end
 end
@@ -372,23 +422,28 @@ function automatic logic [4:0] scale(input logic [4:0] c, input logic [8:0] a);
     return (acc[13:4] > 10'd31) ? 5'd31 : acc[8:4];
 endfunction
 
-assign lb_ra = {v[0], h[9:2]};
+wire [11:0] hx = fl ? hvis - 12'd1 - h : h;   // the column shown at h
+assign lb_ra = {v[0], hx[9:2]};
 
 logic [17:0] px;
 logic [1:0]  hq;
-logic        hin;                            // h within the buffer's 1024 columns
+logic        hin;                            // hx within the buffer's 1024 columns
 always_ff @(posedge clk) begin
-    hq <= h[1:0];
-    hin <= h < 12'd1024;
+    hq <= hx[1:0];
+    hin <= hx < 12'd1024;
     px <= hin ? lb_q[hq] : 18'd0;
 end
 
 // px is ready two clocks after h moves, the scaled channels three, the output takes them at the
-// fourth (the next ce_pix)
+// fourth: the next ce_pix, or at clk / 2 the one after, so the timing is a pixel later there.
+// KBM: a screen's factors take over as its first line is shown, its build having started a line
+// before, while the other screen's last line was showing.
 logic [8:0] fac;
 logic [4:0] sr, sg, sbl;
 logic       son;
-assign fac = l_fac[px[16:15]];
+logic [3:0][8:0] o_fac;
+always_ff @(posedge clk) if (line_start && (v == 12'd0 || (stack && v == half))) o_fac <= l_fac;
+assign fac = KBM ? o_fac[px[16:15]] : l_fac[px[16:15]];
 always_ff @(posedge clk) begin
     sr <= scale(px[14:10], fac);
     sg <= scale(px[9:5], fac);
@@ -396,9 +451,16 @@ always_ff @(posedge clk) begin
     son <= px[17];
 end
 
+logic d_hs, d_vs, d_hb, d_vb;
+always_ff @(posedge clk) if (ce_pix) begin d_hs <= t_hs; d_vs <= t_vs; d_hb <= t_hb; d_vb <= t_vb; end
+wire o_hs = stack ? d_hs : t_hs;
+wire o_vs = stack ? d_vs : t_vs;
+wire o_hb = stack ? d_hb : t_hb;
+wire o_vb = stack ? d_vb : t_vb;
+
 always_ff @(posedge clk) if (ce_pix) begin
-    hs <= t_hs; vs <= t_vs; hb <= t_hb; vb <= t_vb;
-    if (t_hb || t_vb || !son) {r, g, b} <= 24'd0;
+    hs <= o_hs; vs <= o_vs; hb <= o_hb; vb <= o_vb;
+    if (o_hb || o_vb || !son) {r, g, b} <= 24'd0;
     else begin
         r <= {sr, sr[4:2]};
         g <= {sg, sg[4:2]};

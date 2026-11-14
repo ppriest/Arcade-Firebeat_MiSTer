@@ -39,7 +39,7 @@ module fb_dvd_slot (
 
 logic [31:0] sectors;
 assign ntrk = 7'd1;
-assign toc_start = (toc_a == 7'd0) ? 32'd0 : sectors;
+always_ff @(posedge clk) toc_start <= (toc_a == 7'd0) ? 32'd0 : sectors;   // fb_atapi: a clock after toc_a
 
 typedef enum logic [1:0] { S_IDLE, S_ASK, S_XFER } s_t;
 s_t          s;

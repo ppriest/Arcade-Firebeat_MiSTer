@@ -6,7 +6,10 @@
 // frames) runs alongside to check the two kinds of request share the slot. Samples before the first
 // frame arrives are 0 and counted; any later mismatch fails.
 //
-//     scripts/run_verilator.sh cdaudio_tb +bin=debug/cdimages/gc977jaa02.bin +lba=6691 +frames=150
+//     scripts/run_verilator.sh cdaudio_tb +bin=debug/cdimages/gc977jaa02.bin +lba=6691 +frames=150 [+plain=1]
+//
+// First the TOC: each entry read back through toc_a against the one served (+plain=1: none served,
+// the slot's fallback).
 #include "Vtb_cdaudio.h"
 #include "verilated.h"
 #include <cstdio>
@@ -34,12 +37,22 @@ int main(int argc, char **argv) {
     fseek(f, 0, SEEK_END);
     uint64_t bsize = ftell(f);
     uint64_t isize = (bsize + 511) / 512 * 512 + 1024;
+    // the TOC served: three tracks (data, audio, audio with ctl 0xA) and the lead-out, or with
+    // +plain=1 none (the slot's one-track fallback)
+    bool plain = atoi(arg("plain", "0").c_str()) != 0;
+    const uint32_t lead = (uint32_t)(bsize / 2352);
+    struct E { uint32_t start; uint8_t fl, ct; } ents[4] = {{0, 0, 4}, {1000, 1, 0}, {6691, 1, 0xA}, {lead, 0, 3}};
+    uint8_t toc[8 + 8 * 4] = {'F','B','T','C', 3, 1, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        for (int b = 0; b < 4; b++) toc[8 + 8 * i + b] = ents[i].start >> 8 * b;
+        toc[8 + 8 * i + 4] = ents[i].fl; toc[8 + 8 * i + 5] = ents[i].ct;
+    }
     auto byte_at = [&](uint64_t a) -> int {
         static uint64_t base = ~0ull; static uint8_t blk[65536];
         if (a >= bsize) {
             uint64_t t = a - (bsize + 511) / 512 * 512;     // the TOC blocks
-            const uint8_t toc[16] = {'F','B','T','C', 1, 1, 0, 0,  0,0,0,0, 1,0,0,0};
-            return t < 16 ? toc[t] : 0;
+            if (plain) return 0;
+            return t < sizeof toc ? toc[t] : 0;
         }
         if (a - base >= sizeof blk) { base = a & ~0xffffull; fseek(f, base, SEEK_SET); fread(blk, 1, sizeof blk, f); }
         return blk[a - base];
@@ -69,6 +82,20 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 200000 && !t->have_disc; i++) clk();
     if (!t->have_disc) { printf("FAIL no disc\n"); return 1; }
 
+    // the TOC, an entry the clock after toc_a
+    int tocbad = 0, nt = plain ? 1 : 3;
+    if (plain) { ents[0] = {0, 0, 0}; ents[1] = {(uint32_t)(isize >> 11), 0, 0}; }
+    if (t->ntrk != nt) { printf("TOC ntrk %d, want %d\n", t->ntrk, nt); tocbad++; }
+    for (int i = 0; i <= nt; i++) {
+        t->toc_a = i; clk();
+        if (t->toc_start != ents[i].start || t->toc_audio != (ents[i].fl & 1) || t->toc_ctl != (ents[i].ct & 15)) {
+            printf("TOC entry %d: %u %d %X, want %u %d %X\n", i, t->toc_start, t->toc_audio, t->toc_ctl,
+                   ents[i].start, ents[i].fl & 1, ents[i].ct & 15);
+            tocbad++;
+        }
+    }
+    printf("TOC: %d of %d entries wrong\n", tocbad, nt + 1);
+
     long acc = 0, zeros = 0, good = 0, bad = 0, rqs = 0, rq_ok = 0;
     bool started = false;
     t->play_on = 1;
@@ -94,5 +121,5 @@ int main(int argc, char **argv) {
     printf("%ld samples: %ld match, %ld silent before the first frame, %ld mismatches; %ld data reads, %ld done\n",
            frames * 588, good, zeros, bad, rqs, rq_ok);
     delete t;
-    return (bad || rq_ok != rqs) ? 1 : 0;
+    return (bad || tocbad || rq_ok != rqs) ? 1 : 0;
 }

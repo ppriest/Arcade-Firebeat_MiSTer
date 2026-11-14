@@ -25,6 +25,8 @@ every frame.
 | ATAPI drive buffers | `rtl/board/fb_atapi.sv` `b_e`, `b_o` (x 2 drives) | 8 x 2048 x 2 | 4 KB a drive | yes while a transfer is under way, else skip |
 | ATAPI packet and data-out bytes | `fb_atapi.sv` `cmd`, `dout` | 8 x 12; 8 x 64 | 76 a drive | yes |
 | disc TOC | `rtl/board/fb_cd_slot.sv` `t_lo`, `t_hi`, `t_fl`, `t_ct` | 48 x 128 | 768 a drive | skip: read from the slot again at mount |
+| MIDI keyboard note map | `rtl/kbm_usbmidi.sv` `on` | 128 | 16 bytes | skip: input, like the PS/2 keys |
+| English-instructions disc identity | `rtl/board/fb_kbm_en.sv` `vol` | 32 | 4 bytes | skip: read again with the volume descriptor at boot |
 | DMA source blocks | `rtl/board/fb_ppc_dma.sv` `blk`, `fb` | 256 x 3 | 96 | skip if the dump waits for the DMA to be idle |
 | SPU RAM | `rtl/spu/fb_spu68k.sv` `ram_h`, `ram_l` | 8 x 128K x 2 | 256 KB | yes; not yet reachable from the dump |
 | SPU dual-port RAM | `fb_spu68k.sv` `dp` | 8 x 1024 | 1 KB | yes; not yet reachable |
@@ -42,6 +44,7 @@ every frame.
 | SPU registers, timer counters | `fb_spu.sv` | ~120 | yes | ppccom `m_spu` |
 | SPU 68000 (fx68k), mailboxes, IRQ2/6, timer, DMA address, wave bank; the SPU drive | `fb_spu68k.sv`, `firebeat_sys.sv` `g_spu` | fx68k's internal state | yes; fx68k has no state port, the dump does not reach them yet | m68000, firebeat_spu_state save_items |
 | flash modes, status, erase timers, the background erase | `rtl/board/fb_flash.sv` | ~180 | yes | intelfsh save_items |
+| flash sector valid bits (`sv`, 96) and the blank pass (`f_p`, `f_run`) | `rtl/board/fb_flash.sv` | 104 | no: a restored state has its flash, and the benches tie `flash_loaded` | none (MAME's chip is blank, not unknown) |
 | RTC index, page, update and periodic timers | `fb_rtc65271.sv` | ~110 | yes | rtc65271 save_items |
 | PC16552D registers, THR-empty pending | `rtl/board/fb_pc16552.sv` | ~100 | yes | ins8250 save_items |
 | GCU shell registers, ports, IRQ; the display registers (CRTC, contexts, layer select, 0x6C) | `rtl/board/fb_gcu_shell.sv` | ~250; 640 | yes | k057714 save_items (`m_frame`, `m_display_*`, `m_layer_select`, `m_reg_6c`) |
@@ -70,6 +73,7 @@ the registers and lets the game replay; Tier 2 continues bit-exactly.
 | disc TOC (both drives' copies and the slot's) | re-read from the image slot at mount |
 | caches and their line-fill and write-back queues (`fb_cache`) | a dump writes the data cache's dirty lines back (lines kept valid, now clean); every line is then a copy of SDRAM, and a restore starts both caches empty |
 | scan-out line buffer | refilled every line from VRAM |
+| HDMI rotator's line RAMs and buffers (`rtl/video/fb_rot16.sv`) | a copy of the picture; rewritten every frame |
 | DMA source blocks, the GCU's queue and row buffers, DDR3 read FIFO, SDRAM request pipeline | a dump waits for idle; nothing in them is state the next request does not re-derive |
 | ATAPI transfer buffers while no transfer is under way | refilled from the slot per read |
 | SNAC pad poller (`rtl/mister/psx_pad_snac.sv`) | the host's controller, not the board's; re-read at the next poll (2 ms) |
@@ -109,6 +113,10 @@ Register block (`fb_board` `st_a`/`st_d`):
 | 0x0400-0x04FF | `fb_ppc_dma` |
 | 0x0500-0x05FF | the DCR store (`u_dcr`) |
 | 0x0600-0x06FF | the YMZ280B shell's registers, read only |
+| 0x0700-0x077F, 0x0780-0x07FF | KBM: the MIDI UART's channels 0 and 1 (`fb_ns16550`), the registers then 0x40-0x4F the receive FIFO and 0x50-0x5F the transmit FIFO. The FIFOs are read through their one port while the CPU is halted, while the UARTs' 24 MHz enable and the keyboards' timers stop for the hold |
+| 0x0800-0x083F, 0x0840-0x087F | KBM: the two MIDI keyboards (`fb_midi_kbd`) |
+| 0x0880-0x08BF | KBM: the second GCU's shell (`u_gcu2`); its VRAM (DDR3 0x32000000) follows the first in the dump, the header's VRAM size 64 MB |
+| 0x08C0 | `fb_board`: [31:24] the control register, [16] IRQ1's latch, [15:8] the extend board's active bits, [7:0] its enable |
 | 0x1000-0x17FF | the slave drive's access log (`fb_ata`), 1024 entries of two words, a ring from power-on: word 0 [31] write, [30] cs1, [29:27] register, [25:16] repeats - 1 (saturating), [15:0] data as `fb_ata` takes it (the bus halfword byte-swapped); word 1 the time in microseconds. An access equal to the one before counts a repeat |
 | 0x1800 | the number of log entries made since power-on |
 | 0x2000-0x3037 | the RTC's NVRAM image (MAME's .nv format), a byte a word |

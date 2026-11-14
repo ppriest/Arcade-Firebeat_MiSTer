@@ -107,14 +107,21 @@ always_ff @(posedge clk) begin
 end
 
 
-// the TOC, read asynchronously by the drive
-logic [15:0] t_lo [128], t_hi [128];
-logic [7:0]  t_fl [128], t_ct [128];
-assign toc_start = {t_hi[toc_a], t_lo[toc_a]};
-assign toc_audio = t_fl[toc_a][0];
-assign toc_ctl   = t_ct[toc_a][3:0];
+// the TOC, {ctl, audio, start} per entry in block RAM; toc_a's entry is out the clock after
+logic        t_we;
+logic [6:0]  t_wa;
+logic [36:0] t_wd, t_q;
+logic [15:0] t_lo, t_hi;                // an entry's words before its flags
+always_ff @(posedge clk) begin : g_toc
+    logic [36:0] mem [128];
+    if (t_we) mem[t_wa] <= t_wd;
+    t_q <= mem[toc_a];
+end
+assign toc_start = t_q[31:0];
+assign toc_audio = t_q[32];
+assign toc_ctl   = t_q[36:33];
 
-typedef enum logic [2:0] { S_IDLE, S_TOC, S_TOCX, S_ASK, S_XFER } s_t;
+typedef enum logic [2:0] { S_IDLE, S_TOC, S_TOCX, S_TOCF, S_ASK, S_XFER } s_t;
 s_t          s;
 logic [31:0] blocks;
 logic [10:0] w;                         // the word in the transfer (5 blocks: 1,280)
@@ -129,6 +136,7 @@ always_ff @(posedge clk) begin
     rq_done <= 1'b0;
     bw_we <= 1'b0;
     r_we <= 1'b0;
+    t_we <= 1'b0;
     if (rq) begin pend <= 1'b1; pend_lba <= rq_lba; end
 
     case (s)
@@ -164,9 +172,9 @@ always_ff @(posedge clk) begin
             default: if (w >= 11'd4) begin
                 i = 8'((w - 11'd4) >> 2);
                 case (w[1:0])
-                2'd0: t_lo[i[6:0]] <= sd_buff_dout;
-                2'd1: t_hi[i[6:0]] <= sd_buff_dout;
-                2'd2: begin t_fl[i[6:0]] <= sd_buff_dout[7:0]; t_ct[i[6:0]] <= sd_buff_dout[15:8]; end
+                2'd0: t_lo <= sd_buff_dout;
+                2'd1: t_hi <= sd_buff_dout;
+                2'd2: begin t_we <= 1'b1; t_wa <= i[6:0]; t_wd <= {sd_buff_dout[11:8], sd_buff_dout[0], t_hi, t_lo}; end
                 default: ;
                 endcase
             end
@@ -174,14 +182,20 @@ always_ff @(posedge clk) begin
         end
         if (!sd_ack && !sd_rd) begin
             if (!magic_ok) begin
-                // a plain image: one data track, the lead-out at the image's end (whole 2 KB frames)
+                // a plain image: one data track from 0 (here), the lead-out at the image's end (S_TOCF)
                 ntrk <= 7'd1;
-                t_lo[0] <= 16'd0; t_hi[0] <= 16'd0; t_fl[0] <= 8'd0; t_ct[0] <= 8'd0;
-                t_lo[1] <= img_size[26:11]; t_hi[1] <= {5'd0, img_size[37:27]}; t_fl[1] <= 8'd0; t_ct[1] <= 8'd0;
+                t_we <= 1'b1; t_wa <= 7'd0; t_wd <= '0;
+                s <= S_TOCF;
+            end else begin
+                have_disc <= 1'b1; disc_new <= 1'b1;
+                s <= S_IDLE;
             end
-            have_disc <= 1'b1; disc_new <= 1'b1;
-            s <= S_IDLE;
         end
+    end
+    S_TOCF: begin
+        t_we <= 1'b1; t_wa <= 7'd1; t_wd <= {5'd0, 5'd0, img_size[37:27], img_size[26:11]};
+        have_disc <= 1'b1; disc_new <= 1'b1;
+        s <= S_IDLE;
     end
     S_ASK: if (sd_ack) begin sd_rd <= 1'b0; s <= S_XFER; end
     S_XFER: begin

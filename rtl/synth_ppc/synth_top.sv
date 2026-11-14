@@ -26,7 +26,7 @@ module synth_top (
         .i_req, .i_addr, .i_ack(lfsr[3]), .i_rdata(lfsr[35:4]),
         .d_req, .d_we, .d_addr, .d_be, .d_wdata, .d_ack(lfsr[36]), .d_rdata(lfsr[68:37]),
         .dcr_we, .dcr_re, .dcr_addr, .dcr_wdata, .dcr_rdata(lfsr[100:69]),
-        .ext_irq(lfsr[105:101]), .int_irq(lfsr[114:106]),
+        .ext_irq(lfsr[105:101]), .ext_rise(5'd0), .int_irq(lfsr[114:106]),
         .dbg_exec, .dbg_pc, .dbg_ir, .dbg_sel(lfsr[120:115]), .dbg_val,
         .dbg_we(1'b0), .dbg_wsel(6'd0), .dbg_wdata(32'd0)
     );

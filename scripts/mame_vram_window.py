@@ -85,11 +85,12 @@ def main():
                     help="the set's NVRAM files (copied to <out>/nvram/<set>/)")
     ap.add_argument("--events", default="", help="frame:port:mask:len,... presses before the window")
     ap.add_argument("--item", type=int, default=-1, help="VRAM save-item index, if the search errs")
+    ap.add_argument("--gcu", type=int, default=0, help="1: kbm's second GCU (0x7E800100); out dir -sub")
     ap.add_argument("--timeout", type=int, default=3600)
     a = ap.parse_args()
 
     mame_dir, exe = mame_paths()
-    out = REPO / "debug" / f"{a.game}-vram{a.frame}"
+    out = REPO / "debug" / f"{a.game}-vram{a.frame}{'-sub' if a.gcu else ''}"
     if out.exists():
         shutil.rmtree(out)
     (out / "cfg").mkdir(parents=True)
@@ -97,7 +98,7 @@ def main():
         shutil.copytree(Path(a.nvram), out / "nvram" / a.game)
     env = dict(os.environ, CORE_OUT=out.as_posix(), CORE_GAME=a.game, CORE_FRAME=str(a.frame),
                CORE_FRAMES=str(a.frames), CORE_EVENTS=a.events,
-               CORE_VRAM_ITEM=str(a.item),
+               CORE_VRAM_ITEM=str(a.item), CORE_GCU=str(a.gcu),
                CORE_SCRIPT=str(REPO / "scripts" / "mame" / "vramwin.lua"))
     cmd = [str(exe), a.game, "-nodebug", "-nowindow", "-video", "none", "-sound", "none",
            "-skip_gameinfo", "-nothrottle", "-autoboot_delay", "0",

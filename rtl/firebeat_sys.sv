@@ -11,8 +11,9 @@
 //   0x2800000  BIOS, 512 KB
 //   0x2880000  POPN: the SPU's program ROM, 512 KB
 //   0x4000000  POPN: the SPU's wave RAM, 32 MB (the 128 MB module)
-// DDR3 (rtl/mister/hornet_ddr3.sv): VRAM, 32 MB at 0x30000000; the state dump (rtl/board/fb_dump.sv)
-// at 0x34000000, written only while the board is stopped for it.
+// DDR3 (rtl/mister/hornet_ddr3.sv): VRAM, 32 MB at 0x30000000 (KBM: the second GCU's at 0x32000000);
+// the state dump (rtl/board/fb_dump.sv) at 0x34000000, written only while the board is stopped for it.
+// KBM: the MIDI bridge's block for the sound server (rtl/board/fb_midibridge.sv) at 0x3F200000.
 // The DS1991 dongle image (200 bytes) and the RTC65271's NVRAM are in the board's block RAM, loaded
 // a byte at a time (two per hps_io write).
 //
@@ -20,11 +21,14 @@
 // file's even byte. SDRAM and block RAM hold big-endian halfwords, the even byte high.
 //   index 0, the .mra's image: BIOS (ROM_LOAD16_WORD_SWAP, swapped by the .mra), then the
 //            dongle at 0x80000; POPN: BIOS, the SPU's program (likewise swapped) at 0x80000,
-//            the dongle at 0x100000
+//            the dongle at 0x100000; POPN and KBM: the set's RTC preset after the dongle, at
+//            0x102000 (KBM 0x82000), in MAME's .nv format
 //   index 4, the NVRAM file, loaded after the image and saved on request: the three flash chips
 //            (0x000000-0x5FFFFF), then the RTC in MAME's .nv format (0x600000-0x601037); an
-//            RTC whose oscillator was never started (register A's DV bits 0, the core's reset
-//            state, saved from a board that never ran a game) is skipped, leaving the preset
+//            POPN RTC whose oscillator was never started (register A's DV bits 0, the core's reset
+//            state, saved from a board that never ran a game) is skipped, leaving the preset. The
+//            others load it regardless: kbm's RTC after BACKUP CLEAR has DV 000 (scripts/rtc/kbm.nv),
+//            and ppp has no preset to keep, while its saved RTC can have DV 000 over good backup data
 //
 // The board is held in reset until the image has loaded whole (to the dongle; POPN, to the RTC
 // preset's last word), and during every download; its CPU is
@@ -32,7 +36,8 @@
 // board.
 
 module firebeat_sys #(
-    parameter bit POPN = 1'b0               // the Pop'n Music board: fb_board's POPN, and the SPU
+    parameter bit POPN = 1'b0,              // the Pop'n Music board: fb_board's POPN, and the SPU
+    parameter bit KBM  = 1'b0               // the Keyboardmania board: fb_board's KBM
 ) (
     input  logic         clk,               // clk_sys, 66.667 MHz
     input  logic         clk_mem,           // 2 x clk, the SDRAM controller's
@@ -96,6 +101,13 @@ module firebeat_sys #(
     input  logic [7:0]   in0, in1, in2, in3,
     input  logic [15:0]  sensor [4],
     input  logic [3:0]   cabinet_info,
+    input  logic         kbm_en,
+    input  logic [23:0]  kbd [2],           // KBM: the keyboards (1 = down), [0] the left
+    input  logic [7:0]   wheel [2],
+    output logic         midi_txd,          // KBM: the XT446's MIDI in
+    output logic         midi_tx_v,         // KBM: its bytes, each as its stop bit goes out
+    output logic [7:0]   midi_tx_byte,
+    input  logic         midi_mute,         // KBM: the sound server silent (fb_midibridge mute)
 
     output logic         ce_pix,
     output logic [7:0]   vid_r, vid_g, vid_b,
@@ -107,6 +119,8 @@ module firebeat_sys #(
     input  logic         pat_start,         // rewrite the test picture
     input  logic         pat_variant,       // ... inverted
     input  logic         test_pic,          // show it instead of the GCU's display
+    input  logic [1:0]   screen,            // KBM: left, right, both stacked (fb_gcu_disp)
+    input  logic         flip,              // the picture turned 180 degrees (fb_gcu_disp)
     output logic         chk_busy,
     output logic [31:0]  chk_sum,
     output logic [22:0]  chk_lines,
@@ -114,13 +128,27 @@ module firebeat_sys #(
     output logic [7:0]   chk_lat_max,
     output logic [15:0]  scan_late,
     output logic         pat_done,
+    // KBM: HDMI rotation (fb_rot16), in place of the test picture's writer
+    input  logic         rot_en,
+    input  logic         rot_cw,            // clockwise instead
+    output logic [15:0]  rot_late,          // slices dropped (fb_rot16 late)
+    output logic         FB_EN,
+    output logic [4:0]   FB_FORMAT,
+    output logic [11:0]  FB_WIDTH,
+    output logic [11:0]  FB_HEIGHT,
+    output logic [31:0]  FB_BASE,
+    output logic [13:0]  FB_STRIDE,
+    input  logic         FB_VBL,
+    input  logic         FB_LL,
     output logic [15:0]  dl_kb,            // KB written by downloads since the last clear
     // the board, for probes
     output logic [31:0]  brd_pc,
+    output logic [119:0] brd_wd,           // fb_board's wd_dbg
     output logic         brd_bad,
     output logic         brd_reset,
     output logic signed [15:0] aud_l, aud_r,
-    output logic         nv_wr           // fb_board: the NVRAM file is stale
+    output logic         nv_wr,          // fb_board: the NVRAM file is stale
+    output logic [21:0]  perf            // fb_board's probe signals
 );
 
 localparam logic [26:0] FLASH_BASE = 27'h2000000;
@@ -136,17 +164,18 @@ wire nv_xfr = ioctl_index == 16'd4;
 wire nv_dl  = ioctl_download && nv_xfr;
 wire nv_up  = ioctl_upload && nv_xfr;
 wire nv_rtc = ioctl_addr >= 27'h600000 && ioctl_addr < 27'h601038;
-// the file's RTC, unless its first word's register A (the odd byte) has DV 000
+// the file's RTC, unless POPN and its first word's register A (the odd byte) has DV 000
 logic nv_rtc_skip;
-wire nv_rtc_ld = nv_rtc && !(ioctl_addr == 27'h600000 ? ioctl_dout[14:12] == 3'd0 : nv_rtc_skip);
+wire nv_rtc_ld = nv_rtc && (!POPN || !(ioctl_addr == 27'h600000 ? ioctl_dout[14:12] == 3'd0 : nv_rtc_skip));
 always_ff @(posedge clk) if (ioctl_wr && nv_dl && ioctl_addr == 27'h600000) nv_rtc_skip <= ioctl_dout[14:12] == 3'd0;
 wire dg_hit = ioctl_addr[26:8] == (POPN ? 19'h01000 : 19'h00800);   // 0x80000 (POPN 0x100000), 256 bytes
 wire sp_hit = POPN && ioctl_addr[26:19] == 8'd1;                    // 0x80000-0xFFFFF
-// POPN: the set's RTC preset at 0x102000, the RTC's NVRAM until the NVRAM file (index 4) replaces it
-wire rt_hit = POPN && ioctl_addr[26:13] == 14'h81 && ioctl_addr[12:0] < 13'h1038;
+// POPN, KBM: the set's RTC preset, the RTC's NVRAM until the NVRAM file (index 4) replaces it
+wire rt_hit = (POPN || KBM) && ioctl_addr[26:13] == (POPN ? 14'h81 : 14'h41) && ioctl_addr[12:0] < 13'h1038;
 
 wire [15:0] hw_be = {ioctl_dout[7:0], ioctl_dout[15:8]};  // big-endian halfword
 
+logic        fl_loaded = 1'b0;              // the NVRAM file's last flash word has arrived
 logic        d_we;
 logic [26:1] d_addr;
 logic [15:0] d_din;
@@ -172,6 +201,7 @@ always_ff @(posedge clk) begin
         end
     end
     if (ioctl_wr && nv_dl) begin
+        if (ioctl_addr == 27'h5FFFFE) fl_loaded <= 1'b1;
         if (ioctl_addr < 27'h600000) begin
             d_we <= 1'b1; d_addr <= FLASH_BASE[26:1] + ioctl_addr[26:1]; d_din <= hw_be;
         end else if (nv_rtc_ld && ioctl_addr + 27'd1 < 27'h601038) begin
@@ -272,8 +302,10 @@ logic [31:0]  vm_addr, vm_wdata, vm_wdata_hi;
 logic [10:0]  vm_burst;
 logic [3:0]   vm_be, vm_be_hi;
 logic         vblank;
-logic [2:0][31:0] gd_crtc;
-logic [15:0]  gd_layer, gd_6c;
+logic [2:0][31:0] gd_crtc, gd2_crtc;
+logic [15:0]  gd_layer, gd_6c, gd2_layer, gd2_6c;
+logic [3:0][15:0] gd2_alpha, gd2_x, gd2_y, gd2_w, gd2_h;
+logic [3:0][31:0] gd2_base;
 logic [3:0][15:0] gd_alpha, gd_x, gd_y, gd_w, gd_h;
 logic [3:0][31:0] gd_base;
 
@@ -287,7 +319,11 @@ always_ff @(posedge clk) begin
     if (img_dl_q && !img_dl) img_loaded <= img_end;
     if (!pll_locked) img_loaded <= 1'b0;
 end
-assign brd_reset = reset || !pll_locked || hold || ioctl_download || !img_loaded;
+// the watchdog's reset (ppc403_core) holds the board 32 clocks, as the OSD's Reset: the discs stay
+logic       wd_reset;
+logic [4:0] wd_hold = 5'd0;
+always_ff @(posedge clk) wd_hold <= wd_reset ? 5'd31 : wd_hold - 5'(wd_hold != 5'd0);
+assign brd_reset = reset || !pll_locked || hold || ioctl_download || !img_loaded || wd_reset || wd_hold != 5'd0;
 
 // the HPS's time, set once, when the board first leaves reset (MAME sets it at start-up); the
 // weekday as MAME's, 1 for Sunday
@@ -335,9 +371,9 @@ logic       dp_cs, dp_we, dp_irq;
 logic [9:0] dp_addr;
 logic [7:0] dp_wd, dp_rd;
 
-fb_board #(.POPN(POPN)) u_board (
-    .clk, .reset(brd_reset), .por(!pll_locked), .ce(!pause && !nv_up),
-    .halt(x_halt), .frozen(x_frozen), .st_a, .st_d, .st_we(1'b0), .st_wd(32'd0), .ata_check, .ata_key,
+fb_board #(.POPN(POPN), .KBM(KBM)) u_board (
+    .clk, .reset(brd_reset), .por(!pll_locked), .flash_loaded(fl_loaded), .ce(!pause && !nv_up),
+    .halt(x_halt), .frozen(x_frozen), .wd_reset, .st_a, .st_d, .st_we(1'b0), .st_wd(32'd0), .ata_check, .ata_key,
     .dma_hold(1'b0), .tb_en(1'b1), .irq_force(5'd0), .dma_busy(),
     .c_req(b_c_req), .c_we(b_c_we), .c_addr(b_c_addr), .c_wdata, .c_ack(c_ack && !hold && !x_own), .c_rdata,
     .m_req, .m_addr, .m_ack, .m_rdata,
@@ -347,16 +383,19 @@ fb_board #(.POPN(POPN)) u_board (
     .vm_waitn, .vm_rvalid, .vm_rdata(d_rdata), .vm_rdata_hi(d_rdata_hi),
     .img_mounted, .img_size, .sd_lba(b_sd_lba), .sd_blk_cnt(b_sd_blk_cnt), .sd_rd(b_sd_rd),
     .sd_ack(POPN ? {1'b0, sd_ack[0]} : sd_ack), .sd_buff_wr, .sd_buff_dout,
-    .vblank, .in0, .in1, .in2, .in3, .sensor, .cabinet_info,
+    .vblank, .in0, .in1, .in2, .in3, .sensor, .cabinet_info, .kbm_en,
+    .gcu_skip(screen == 2'd0 ? 2'b10 : screen == 2'd1 ? 2'b01 : 2'b00),
+    .kbd, .wheel, .midi_txd, .midi_tx_v, .midi_tx_byte,
     .dp_cs, .dp_we, .dp_addr, .dp_wd, .dp_rd, .dp_irq,
-    .aud_l(b_aud_l), .aud_r(b_aud_r), .control(), .nv_wr,
+    .aud_l(b_aud_l), .aud_r(b_aud_r), .control(), .nv_wr, .perf,
     .dg_we, .dg_addr(ld_a[7:0]), .dg_data(ld_d),
     .rtc_nv_we, .rtc_nv_addr, .rtc_nv_wdata(ld_d), .rtc_nv_rdata,
     .rtc_set, .rtc_time,
     .gcu_cmd_v(), .gcu_cmd_port(), .gcu_cmd(),
     .gd_crtc, .gd_layer, .gd_alpha, .gd_x, .gd_y, .gd_w, .gd_h, .gd_base, .gd_6c,
+    .gd2_crtc, .gd2_layer, .gd2_alpha, .gd2_x, .gd2_y, .gd2_w, .gd2_h, .gd2_base, .gd2_6c,
     .mon_v(), .mon_we(), .mon_addr(), .mon_mask(), .mon_data(), .bad(brd_bad),
-    .dbg_exec(), .dbg_pc(brd_pc), .dbg_ir(), .dbg_sel(6'd0), .dbg_val(),
+    .dbg_exec(), .dbg_pc(brd_pc), .wd_dbg(brd_wd), .dbg_ir(), .dbg_sel(6'd0), .dbg_val(),
     .dbg_we(1'b0), .dbg_wsel(6'd0), .dbg_wdata(32'd0)
 );
 
@@ -587,7 +626,8 @@ firebeat_sdram u_sdram (
 );
 
 // ------------------------------------------------------------------------------------------
-// DDR3: master 0 the GCU, 1 the test picture's writes, 2 the state dump, 3 scan-out (served first)
+// DDR3: master 0 the GCU, 1 the test picture's writes (KBM: the HDMI rotator's), 2 the state dump,
+// 3 scan-out (served first)
 // ------------------------------------------------------------------------------------------
 
 logic [1:0] hps_rst_s = 2'b11;
@@ -599,9 +639,13 @@ logic [3:0][31:0] d_maddr, d_wdata, d_wdata_hi;
 logic [3:0][3:0]  d_be, d_be_hi;
 logic [3:0][10:0] d_burst;
 logic [31:0]      d_rdata, d_rdata_hi;
+logic        x_write, mb_write, x_waitn, mb_waitn, g_dump;
+logic [31:0] x_maddr, x_wdata, x_wdata_hi, mb_addr, mb_wdata, mb_wdata_hi;
+logic [10:0] x_burst, mb_burst;
 
-// PRI 0, the GCU; Quartus elaborates req[PRI] even when PRI is -1
-hornet_ddr3 #(.N(4), .WIDE(4'b1111), .PRI(0)) u_ddr3 (
+// PRI 0, the GCU; Quartus elaborates req[PRI] even when PRI is -1. RT 1, the rotator ahead of the
+// GCU: behind it, the engine's back-to-back commands in play held it off until its slices were lost
+hornet_ddr3 #(.N(4), .WIDE(4'b1111), .PRI(0), .RT(KBM ? 1 : -1)) u_ddr3 (
     .clk, .reset(ddr_rst), .drain(1'b0), .idle(),
     .m_read(d_read), .m_write(d_write), .m_addr(d_maddr), .m_burst(d_burst), .m_be(d_be),
     .m_wdata(d_wdata), .m_be_hi(d_be_hi), .m_wdata_hi(d_wdata_hi), .m_waitn(d_waitn),
@@ -610,14 +654,42 @@ hornet_ddr3 #(.N(4), .WIDE(4'b1111), .PRI(0)) u_ddr3 (
     .DDRAM_DIN, .DDRAM_BE, .DDRAM_WE, .dbg(), .dbg_cmd()
 );
 
-fb_dump u_dump (
+fb_dump #(.VRAM_SIZE(KBM ? 32'h0400_0000 : 32'h0200_0000)) u_dump (
     .clk, .reset(ddr_rst), .abort(brd_reset), .start(x_start), .halt(x_halt), .frozen(x_frozen),
     .port_free(!b_c_req && sd_rd == 2'b00), .busy(dump_busy), .own(x_own), .st_a, .st_d,
     .c_req(x_c_req), .c_addr(x_c_addr), .c_ack(x_c_ack), .c_rdata,
-    .m_write(d_write[2]), .m_addr(d_maddr[2]), .m_burst(d_burst[2]), .m_wdata(d_wdata[2]),
-    .m_wdata_hi(d_wdata_hi[2]), .m_waitn(d_waitn[2])
+    .m_write(x_write), .m_addr(x_maddr), .m_burst(x_burst), .m_wdata(x_wdata),
+    .m_wdata_hi(x_wdata_hi), .m_waitn(x_waitn)
 );
 assign dump_held = x_halt && !dump_busy;
+
+// master 2: the dump while it copies (the board stopped), otherwise KBM's MIDI bridge. The grant
+// changes only between writes, neither side's request withdrawn before it is taken.
+always_ff @(posedge clk)
+    if (ddr_rst) g_dump <= 1'b0;
+    else if (g_dump ? !dump_busy && !x_write : dump_busy && !mb_write) g_dump <= !g_dump;
+assign d_write[2]    = g_dump ? x_write    : mb_write;
+assign d_maddr[2]    = g_dump ? x_maddr    : mb_addr;
+assign d_burst[2]    = g_dump ? x_burst    : mb_burst;
+assign d_wdata[2]    = g_dump ? x_wdata    : mb_wdata;
+assign d_wdata_hi[2] = g_dump ? x_wdata_hi : mb_wdata_hi;
+assign x_waitn  = g_dump && d_waitn[2];
+assign mb_waitn = !g_dump && d_waitn[2];
+
+generate
+if (KBM) begin : g_midi
+    fb_midibridge u_midi (
+        .clk, .reset(ddr_rst), .brd_reset, .held(pause), .mute(midi_mute),
+        .tx_v(midi_tx_v), .tx_byte(midi_tx_byte),
+        .m_write(mb_write), .m_addr(mb_addr), .m_burst(mb_burst), .m_wdata(mb_wdata),
+        .m_wdata_hi(mb_wdata_hi), .m_waitn(mb_waitn)
+    );
+end else begin : g_nomidi
+    assign mb_write = 1'b0;
+    assign {mb_addr, mb_wdata, mb_wdata_hi} = '0;
+    assign mb_burst = 11'd0;
+end
+endgenerate
 
 assign d_read[0] = vm_read;
 assign d_write[0] = vm_write;
@@ -635,11 +707,31 @@ assign d_be[3] = 4'hF; assign d_be_hi[3] = 4'hF;
 assign d_read[2] = 1'b0;
 
 assign d_read[1] = 1'b0;
-pattern_writer u_pat (
-    .clk, .reset(ddr_rst), .start(pat_start), .variant(pat_variant), .auto(test_pic), .done(pat_done),
-    .m_write(d_write[1]), .m_addr(d_maddr[1]), .m_burst(d_burst[1]), .m_wdata(d_wdata[1]),
-    .m_wdata_hi(d_wdata_hi[1]), .m_waitn(d_waitn[1])
-);
+generate
+if (KBM) begin : g_rot
+    assign pat_done = 1'b0;
+    fb_rot16 u_rot (
+        .clk, .reset(ddr_rst), .enable(rot_en), .cw(rot_cw),
+        .ce_pix, .r(vid_r), .g(vid_g), .b(vid_b), .vs(vid_vs), .de(!(vid_hb || vid_vb)),
+        .FB_EN, .FB_FORMAT, .FB_WIDTH, .FB_HEIGHT, .FB_BASE, .FB_STRIDE, .FB_VBL, .FB_LL,
+        .m_write(d_write[1]), .m_addr(d_maddr[1]), .m_burst(d_burst[1]), .m_wdata(d_wdata[1]),
+        .m_wdata_hi(d_wdata_hi[1]), .m_waitn(d_waitn[1]), .late(rot_late)
+    );
+end else begin : g_pat
+    assign rot_late = 16'd0;
+    assign FB_EN = 1'b0;
+    assign FB_FORMAT = 5'd0;
+    assign FB_WIDTH = 12'd0;
+    assign FB_HEIGHT = 12'd0;
+    assign FB_BASE = 32'd0;
+    assign FB_STRIDE = 14'd0;
+    pattern_writer u_pat (
+        .clk, .reset(ddr_rst), .start(pat_start), .variant(pat_variant), .auto(test_pic), .done(pat_done),
+        .m_write(d_write[1]), .m_addr(d_maddr[1]), .m_burst(d_burst[1]), .m_wdata(d_wdata[1]),
+        .m_wdata_hi(d_wdata_hi[1]), .m_waitn(d_waitn[1])
+    );
+end
+endgenerate
 
 // ------------------------------------------------------------------------------------------
 // video
@@ -648,8 +740,10 @@ pattern_writer u_pat (
 assign d_write[3] = 1'b0;
 assign d_wdata[3] = 32'd0;
 assign d_wdata_hi[3] = 32'd0;
-fb_gcu_disp u_disp (
-    .clk, .reset(ddr_rst), .test(test_pic),
+fb_gcu_disp #(.KBM(KBM)) u_disp (
+    .clk, .reset(ddr_rst), .test(test_pic), .screen, .flip,
+    .b_crtc(gd2_crtc), .b_layer(gd2_layer), .b_alpha(gd2_alpha), .b_x(gd2_x), .b_y(gd2_y), .b_w(gd2_w),
+    .b_h(gd2_h), .b_base(gd2_base), .b_6c(gd2_6c),
     .crtc(gd_crtc), .layer(gd_layer), .fr_alpha(gd_alpha), .fr_x(gd_x), .fr_y(gd_y), .fr_w(gd_w),
     .fr_h(gd_h), .fr_base(gd_base), .reg_6c(gd_6c),
     .m_read(d_read[3]), .m_addr(d_maddr[3]), .m_burst(d_burst[3]), .m_waitn(d_waitn[3]),

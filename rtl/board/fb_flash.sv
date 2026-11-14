@@ -15,12 +15,20 @@
 // pop'n music note in intelfsh.cpp); then normal mode, status 0x80. The erased bytes become 0xFF
 // in SDRAM in the background. Intel block erase (20 D0) and the master lock (60) set `bad`.
 //
+// Blank chips: until the NVRAM file has loaded (loaded) the SDRAM holds whatever was there, so each
+// 64 KB sector has a valid bit, cleared at power-on (por). An invalid sector reads 0xFF, as MAME's
+// blank chip, and once out of reset a background pass writes 0xFF over each invalid sector and
+// marks it valid; a CPU erase marks its sectors valid at once. A byte programmed into a sector the
+// pass has not reached yet is lost (HACKS).
+//
 // Port c: the CPU's byte accesses (offset within the chip). Port y: the YMZ280B's reads of the two
 // sound chips (its 4 MB space: snd1 then snd2), through the same mode logic, as MAME's ymz280b_map.
 
 module fb_flash (
     input  logic        clk,
     input  logic        reset,
+    input  logic        por,
+    input  logic        loaded,         // the NVRAM file has written every chip
 
     input  logic        c_req,          // held until c_ack
     input  logic        c_we,
@@ -67,6 +75,14 @@ logic [31:0] tmr [3];
 logic        e_on;
 logic [26:2] e_a, e_end;
 
+// the sectors written since power-on, and the pass over the rest: chip f_p[6:5], sector f_p[4:0]
+logic [2:0][31:0] sv;
+logic [6:0]  f_p;
+logic        f_run;
+function automatic logic ok(input logic [1:0] chip, input logic [20:0] a);
+    return loaded || sv[chip][a[20:16]];
+endfunction
+
 // an SDRAM access in hand
 typedef enum logic [1:0] { A_NONE, A_CPU, A_YMZ, A_ERASE } a_t;
 a_t          a_who;
@@ -107,7 +123,13 @@ always_ff @(posedge clk) begin
         case (a_who)
         A_CPU: begin c_ack <= 1'b1; c_rdata <= lane(w_rdata, a_byte[1:0]); c_pend <= 1'b0; end
         A_YMZ: begin y_ack <= 1'b1; y_rdata <= lane(w_rdata, a_byte[1:0]); y_pend <= 1'b0; end
-        A_ERASE: begin e_a <= e_a + 25'd1; if (e_a + 25'd1 == e_end) e_on <= 1'b0; end
+        A_ERASE: begin
+            e_a <= e_a + 25'd1;
+            if (e_a + 25'd1 == e_end) begin
+                e_on <= 1'b0;
+                if (f_run) begin sv[f_p[6:5]][f_p[4:0]] <= 1'b1; f_p <= f_p + 7'd1; f_run <= 1'b0; end
+            end
+        end
         default: ;
         endcase
     end
@@ -122,9 +144,9 @@ always_ff @(posedge clk) begin
         c_pend <= 1'b1;
         if (!c_we) begin
             case (mode[k])
-            F_NORMAL, F_AMD1, F_AMD2, F_ERASE1, F_ERASE2, F_ERASE3, F_BYTEPROG, F_FASTRESET, F_WRITEPART1: begin
-                a_busy <= 1'b1; a_who <= A_CPU; a_we <= 1'b0; a_byte <= sd(k, c_addr);
-            end
+            F_NORMAL, F_AMD1, F_AMD2, F_ERASE1, F_ERASE2, F_ERASE3, F_BYTEPROG, F_FASTRESET, F_WRITEPART1:
+                if (!ok(k, c_addr)) begin c_rdata <= 8'hFF; c_ack <= 1'b1; c_pend <= 1'b0; end
+                else begin a_busy <= 1'b1; a_who <= A_CPU; a_we <= 1'b0; a_byte <= sd(k, c_addr); end
             F_READSTATUS: begin c_rdata <= status[k]; c_ack <= 1'b1; c_pend <= 1'b0; end
             F_READID, F_AMD3ID: begin
                 c_rdata <= (c_addr[7:0] == 8'd0) ? 8'h04 : (c_addr[7:0] == 8'd1) ? 8'hAD : 8'h00;
@@ -170,9 +192,11 @@ always_ff @(posedge clk) begin
             F_ERASE3:
                 if ((a12 == 12'h555 || a12 == 12'hAAA) && d == 8'h10) begin
                     status[k] <= 8'h08; mode[k] <= F_ERASE4; tmr[k] <= T_CHIP;
+                    sv[k] <= '1; f_run <= 1'b0;
                     e_on <= 1'b1; e_a <= sd(k, 21'd0) >> 2; e_end <= (sd(k, 21'd0) + 27'h200000) >> 2;
                 end else if (d == 8'h30) begin
                     status[k] <= 8'h08; mode[k] <= F_ERASE4; tmr[k] <= T_SECTOR;
+                    sv[k][c_addr[20:16]] <= 1'b1; f_run <= 1'b0;
                     e_on <= 1'b1; e_a <= sd(k, {c_addr[20:16], 16'd0}) >> 2;
                     e_end <= (sd(k, {c_addr[20:16], 16'd0}) + 27'h10000) >> 2;
                 end
@@ -194,17 +218,27 @@ always_ff @(posedge clk) begin
         else if (mode[yc] == F_READID || mode[yc] == F_AMD3ID) begin
             y_rdata <= (y_addr[7:0] == 8'd0) ? 8'h04 : (y_addr[7:0] == 8'd1) ? 8'hAD : 8'h00;
             y_ack <= 1'b1; y_pend <= 1'b0;
+        end else if (!ok(yc, y_addr[20:0])) begin y_rdata <= 8'hFF; y_ack <= 1'b1; y_pend <= 1'b0;
         end else begin
             a_busy <= 1'b1; a_who <= A_YMZ; a_we <= 1'b0; a_byte <= sd(yc, y_addr[20:0]);
         end
     end else if (e_on && !a_busy && !c_pend && !y_pend) begin
         a_busy <= 1'b1; a_who <= A_ERASE; a_we <= 1'b1; a_byte <= {e_a, 2'b00};
+    end else if (!e_on && !loaded && f_p < 7'd96) begin
+        // the pass: the next sector not yet valid
+        if (sv[f_p[6:5]][f_p[4:0]]) f_p <= f_p + 7'd1;
+        else begin
+            f_run <= 1'b1; e_on <= 1'b1;
+            e_a <= sd(f_p[6:5], {f_p[4:0], 16'd0}) >> 2;
+            e_end <= (sd(f_p[6:5], {f_p[4:0], 16'd0}) + 27'h10000) >> 2;
+        end
     end
 
     if (reset) begin
         for (int k = 0; k < 3; k++) begin mode[k] <= F_NORMAL; status[k] <= 8'h80; fast[k] <= 1'b0; tmr[k] <= '0; end
-        e_on <= 1'b0; a_busy <= 1'b0; c_pend <= 1'b0; y_pend <= 1'b0; bad <= 1'b0;
+        e_on <= 1'b0; a_busy <= 1'b0; c_pend <= 1'b0; y_pend <= 1'b0; bad <= 1'b0; f_run <= 1'b0;
     end
+    if (por) begin sv <= '0; f_p <= 7'd0; end
 `ifdef VERILATOR  // st_lists: write
     if (st_we) case (st_a)
     6'h0: c_ack <= ($bits(c_ack))'(st_wd);

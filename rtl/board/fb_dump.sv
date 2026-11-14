@@ -17,7 +17,8 @@
 // hornet_ddr3 master writing a line (two 64-bit beats) a burst.
 
 module fb_dump #(
-    parameter logic [31:0] BASE = 32'h3400_0000
+    parameter logic [31:0] BASE = 32'h3400_0000,
+    parameter logic [31:0] VRAM_SIZE = 32'h0200_0000
 ) (
     input  logic         clk,
     input  logic         reset,
@@ -66,7 +67,7 @@ assign st_a = {line[11:0], wk};
 
 function automatic logic [127:0] header(input logic second, input logic [31:0] n);
     return second ? {SD_SIZE, SD_OFF, REG_SIZE, REG_OFF}
-                  : {32'h0200_0000, 32'h3000_0000, n, 32'h4642_5344};   // VRAM size, VRAM, count, "FBSD"
+                  : {VRAM_SIZE, 32'h3000_0000, n, 32'h4642_5344};   // VRAM size, VRAM, count, "FBSD"
 endfunction
 
 always_ff @(posedge clk) begin

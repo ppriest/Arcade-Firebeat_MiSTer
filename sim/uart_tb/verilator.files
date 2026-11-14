@@ -1,0 +1,3 @@
+rtl/board/fb_ns16550.sv
+rtl/board/fb_midibridge.sv
+sim/uart_tb/tb_uart.sv

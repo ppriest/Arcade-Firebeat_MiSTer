@@ -15,7 +15,10 @@
 // A fill writes each row as bursts of one constant beat (the pattern follows the pixel address).
 // An object reads a source row (at most 512 pixels) into SB, four copies so that four scaled
 // columns are read a clock, and builds the destination a beat (four pixels) a clock in chunks of
-// 128 beats in DB, reading the destination first only when it blends; transparent and clipped
+// 128 beats in DB, reading the destination into DR first only when it blends. A beat is built as
+// soon as the SB and DR beats it needs have landed, so drawing follows the read. A row's write is
+// held until the next row's source read is on the port, unless that read covers the beats written
+// (the port serves a master's commands in order, so the read would see VRAM before the write); transparent and clipped
 // pixels are written with byte enables off, and only the beats from the first to the last drawn
 // one. A source row is read again only when it changes or when the rows drawn since overlapped it.
 // A character builds its 8 pixels a row in DB, a pixel a clock. Queued VRAM words are gathered in
@@ -24,25 +27,35 @@
 //
 // MAME executes a command within the register write; here the queue absorbs them and the shell
 // holds the bus only when the queue is full or a VRAM read must wait for it (HACKS).
+//
+// NG = 2 (kbm): one engine for both GCUs, a queue, an origin and a VRAM base each. It changes GCU
+// only between queue entries (a display list runs to its end), taking the other GCU's next entry
+// whenever it has one; a run of VRAM words ends when the other GCU has an entry waiting. skip: a
+// GCU whose screen is not shown; its fills, objects, characters and display lists end at once,
+// drawing nothing (VRAM words and origins still apply), so that the shown one has the engine (HACKS).
 
 module fb_gcu #(
-    parameter logic [31:0] VBASE = 32'h3000_0000,
-    parameter int          QW    = 5,               // the queue holds 2^QW entries
-    parameter int          STK   = 8                // display lists nested below the first
+    parameter logic [31:0] VBASE  = 32'h3000_0000,
+    parameter logic [31:0] VBASE2 = 32'h3200_0000,  // NG = 2: the second GCU's VRAM
+    parameter int          NG     = 1,
+    parameter int          QW     = 5,              // each queue holds 2^QW entries
+    parameter int          STK    = 8               // display lists nested below the first
 ) (
     input  logic         clk,
     input  logic         reset,
 
-    input  logic         push,
-    input  logic [129:0] push_d,
-    output logic         ready,             // room for two more entries
-    output logic         idle,              // nothing queued, nothing running
+    // per GCU
+    input  logic [NG-1:0]        push,
+    input  logic [NG-1:0][129:0] push_d,
+    output logic [NG-1:0]        ready,     // room for two more entries
+    output logic [NG-1:0]        idle,      // nothing queued, nothing running for it
+    input  logic [NG-1:0]        skip,      // draw nothing for it
 
-    // a VRAM word for the read window, taken only when idle
-    input  logic         rw_req,
-    input  logic [22:0]  rw_addr,
-    output logic         rw_ack,
-    output logic [31:0]  rw_data,
+    // a VRAM word for a GCU's read window, taken only when it is idle
+    input  logic [NG-1:0]        rw_req,
+    input  logic [NG-1:0][22:0]  rw_addr,
+    output logic [NG-1:0]        rw_ack,
+    output logic [31:0]          rw_data,
 
     output logic         m_read,
     output logic         m_write,
@@ -55,30 +68,52 @@ module fb_gcu #(
     input  logic         m_waitn,
     input  logic         m_rvalid,
     input  logic [31:0]  m_rdata,
-    input  logic [31:0]  m_rdata_hi
+    input  logic [31:0]  m_rdata_hi,
+    // the probes (Firebeat.sv DEBUG_ISSP): running, for which GCU, waiting on DDR3, queue depths
+    output logic         p_busy,
+    output logic         p_g,
+    output logic         p_mwait,
+    output logic [NG-1:0][QW:0] p_depth
 );
 
 // ------------------------------------------------------------------------------------------
 // queue
 // ------------------------------------------------------------------------------------------
 
-logic [129:0] qm [1 << QW];
-logic [QW:0]  q_wp, q_rp;
-logic [129:0] q_q;
+// g: the GCU being served; gi it as an index, go the other one
+logic  g;
+wire   gi = NG > 1 && g;
+wire   go = NG > 1 && !g;
+
+logic [129:0] q_qs [NG];
+logic [QW:0]  q_cs [NG];
 logic         q_rd;
-always_ff @(posedge clk) begin
-    if (push) qm[q_wp[QW-1:0]] <= push_d;
-    q_q <= qm[q_rp[QW-1:0]];
-    if (push) q_wp <= q_wp + 1'd1;
-    if (q_rd) q_rp <= q_rp + 1'd1;
-    if (reset) begin q_wp <= '0; q_rp <= '0; end
+genvar gq;
+generate
+for (gq = 0; gq < NG; gq++) begin : g_q
+    logic [129:0] qm [1 << QW];
+    logic [QW:0]  q_wp, q_rp;
+    always_ff @(posedge clk) begin
+        if (push[gq]) qm[q_wp[QW-1:0]] <= push_d[gq];
+        q_qs[gq] <= qm[q_rp[QW-1:0]];
+        if (push[gq]) q_wp <= q_wp + 1'd1;
+        if (q_rd && gi == (gq != 0)) q_rp <= q_rp + 1'd1;
+        if (reset) begin q_wp <= '0; q_rp <= '0; end
+    end
+    assign q_cs[gq] = q_wp - q_rp;
+    assign ready[gq] = q_cs[gq] < (QW+1)'((1 << QW) - 2);
 end
-wire [QW:0] q_cnt = q_wp - q_rp;
-assign ready = q_cnt < (QW+1)'((1 << QW) - 2);
+endgenerate
+wire [129:0] q_q   = q_qs[gi];
+wire [QW:0]  q_cnt = q_cs[gi];
+wire         q_oth = NG > 1 && q_cs[go] != '0;     // the other GCU has an entry
+assign p_g = gi;
+assign p_mwait = (m_read || m_write) && !m_waitn;
+always_comb for (int k = 0; k < NG; k++) p_depth[k] = q_cs[k];
 
 // ------------------------------------------------------------------------------------------
-// buffers: SB a source row of beats (four copies, one a pixel of the beat built); DB the
-// destination chunk, one RAM a field, and its enables
+// buffers: SB a source row of beats (four copies, one a pixel of the beat built); DR the
+// destination chunk as read, for blending; DB the chunk built, one RAM a field, and its enables
 // ------------------------------------------------------------------------------------------
 
 logic        sb_we;
@@ -113,6 +148,15 @@ for (gf = 0; gf < 4; gf++) begin : g_dbf
 end
 endgenerate
 
+logic        dr_we;
+logic [6:0]  dr_wa, dr_ra;
+logic [63:0] dr_wd, drq;
+always_ff @(posedge clk) begin : g_dr
+    logic [63:0] mem [128];
+    if (dr_we) mem[dr_wa] <= dr_wd;
+    drq <= mem[dr_ra];
+end
+
 logic [3:0]  db_be [128];               // fields written this chunk
 logic        tr_any;                    // a field written: tr_lo..tr_hi the beats holding them
 logic [6:0]  tr_lo, tr_hi;
@@ -131,7 +175,10 @@ function automatic logic [3:0] upto_q(input logic [1:0] e);
 endfunction
 
 // ------------------------------------------------------------------------------------------
-// reader: rd_n beats from beat rd_b0 into SB, DB or rb
+// reader: rd_n beats from beat rd_b0 into SB, DB or rb. Two reads can be outstanding: a second is
+// issued once the first's bursts are all on the port, and its beats follow the first's (the port
+// returns a master's data in order). rd_d / rd_rcv / rd_wi are the read receiving, rd_d1 / rd_n1
+// the one queued behind it.
 // ------------------------------------------------------------------------------------------
 
 localparam logic [1:0] D_SB = 2'd0, D_DB = 2'd1, D_RB = 2'd2;
@@ -142,9 +189,10 @@ logic [8:0]  rd_n;
 logic [1:0]  rd_dst;
 
 logic [21:0] rd_b;
-logic [8:0]  rd_iss, rd_rcv;
+logic [8:0]  rd_iss, rd_rcv, rd_n1;
 logic [7:0]  rd_wi;
-logic [1:0]  rd_d;
+logic [1:0]  rd_d, rd_d1;
+logic        rd_q1;                     // a read queued behind the one receiving
 logic [63:0] rb [3];
 
 function automatic logic [8:0] burst_of(input logic [8:0] left, input logic [21:0] b);
@@ -158,21 +206,33 @@ endfunction
 
 wire [8:0] rd_cb = burst_of(rd_iss, rd_b);
 wire rd_busy = rd_iss != 9'd0 || rd_rcv != 9'd0;
+wire rd_room = rd_iss == 9'd0 && !rd_q1;     // a read may be issued (with rd_go low)
 
 always_ff @(posedge clk) begin
-    if (m_read && m_waitn) begin rd_b <= rd_b + {13'd0, rd_cb}; rd_iss <= rd_iss - rd_cb; end
+    logic [8:0] iss, rcv, n1;
+    logic [7:0] wi;
+    logic [1:0] d, d1;
+    logic       q1;
+    iss = rd_iss; rcv = rd_rcv; n1 = rd_n1; wi = rd_wi; d = rd_d; d1 = rd_d1; q1 = rd_q1;
+    if (m_read && m_waitn) begin rd_b <= rd_b + {13'd0, rd_cb}; iss = iss - rd_cb; end
     if (m_rvalid) begin
-        rd_wi <= rd_wi + 8'd1;
-        rd_rcv <= rd_rcv - 9'd1;
-        if (rd_d == D_RB) rb[rd_wi[1:0]] <= {m_rdata_hi, m_rdata};
+        if (d == D_RB) rb[wi[1:0]] <= {m_rdata_hi, m_rdata};
+        wi = wi + 8'd1;
+        rcv = rcv - 9'd1;
+        if (rcv == 9'd0 && q1) begin rcv = n1; d = d1; q1 = 1'b0; wi = 8'd0; end
     end
-    if (rd_go) begin rd_b <= rd_b0; rd_iss <= rd_n; rd_rcv <= rd_n; rd_wi <= 8'd0; rd_d <= rd_dst; end
-    // reset: no more bursts, but the beats of those on the port are still taken (hornet_ddr3 has
-    // no way to cancel them)
     if (reset) begin
-        rd_iss <= '0;
-        rd_rcv <= rd_rcv - rd_iss + ((m_read && m_waitn) ? rd_cb : 9'd0) - (m_rvalid ? 9'd1 : 9'd0);
+        // no more bursts, but the beats of those on the port are still taken (hornet_ddr3 has no
+        // way to cancel them); the unissued beats are the last read's
+        if (q1) n1 = n1 - iss; else rcv = rcv - iss;
+        if (q1 && n1 == 9'd0) q1 = 1'b0;
+        iss = '0;
+    end else if (rd_go) begin
+        rd_b <= rd_b0; iss = rd_n;
+        if (rcv == 9'd0) begin rcv = rd_n; d = rd_dst; wi = 8'd0; end
+        else begin n1 = rd_n; d1 = rd_dst; q1 = 1'b1; end
     end
+    rd_iss <= iss; rd_rcv <= rcv; rd_n1 <= n1; rd_wi <= wi; rd_d <= d; rd_d1 <= d1; rd_q1 <= q1;
 end
 
 // ------------------------------------------------------------------------------------------
@@ -251,7 +311,7 @@ wire [63:0] wr_data = wr_src ? {dbq[3], dbq[2], dbq[1], dbq[0]} : wr_pq;
 
 assign m_read     = rd_iss != 9'd0;
 assign m_write    = wr_on && !wr_prime;
-assign m_addr     = VBASE + {7'd0, (m_read ? rd_b : wr_b), 3'd0};
+assign m_addr     = (gi ? VBASE2 : VBASE) + {7'd0, (m_read ? rd_b : wr_b), 3'd0};
 assign m_burst    = {1'b0, (m_read ? rd_cb : wr_cb), 1'b0};
 assign m_wdata    = wr_data[31:0];
 assign m_wdata_hi = wr_data[63:32];
@@ -287,13 +347,16 @@ typedef enum logic [4:0] {
     S_IDLE, S_POP, S_DEC, S_WAIT, S_CMD, S_NEXT, S_DLX, S_DLF, S_DLEND, S_VGET, S_VPOP, S_VDEC, S_VFL,
     S_FROW, S_FNXT,
     S_OD1, S_OD2, S_OD3, S_OD4, S_OSET, S_OROW, S_OCH, S_OPX, S_ODRN, S_OCHN,
-    S_CROW, S_CPX, S_CDRN, S_CNXT, S_RWIN
+    S_CROW, S_CPX, S_CDRN, S_CNXT, S_RWIN, S_OWD, S_OBG
 } st_t;
 st_t st, ret;
+assign p_busy = st != S_IDLE;
 
 logic [31:0] c0, c1, c2, c3;
-logic [9:0]  org_x;
-logic [13:0] org_y;
+logic [9:0]  org_xs [NG];
+logic [13:0] org_ys [NG];
+wire  [9:0]  org_x = org_xs[gi];
+wire  [13:0] org_y = org_ys[gi];
 
 // display lists
 logic [3:0]  depth;                     // 0: an immediate command; 1: the first list
@@ -330,8 +393,10 @@ logic [14:0] o_k0;
 logic [9:0]  o_n;                       // the chunk's pixels
 logic [7:0]  o_nb;                      // and beats
 logic [6:0]  o_ob;
+logic        o_wdef;                    // a row's write held back until the next row's read is on the port
 logic [3:0]  o_fm, o_lm;
 logic [29:0] o_b0;                      // the chunk's first beat
+logic [29:0] o_b0n;                     // the next chunk's, until the held write has gone
 
 // character
 logic [23:0] ch_a, ch_d;
@@ -355,8 +420,10 @@ logic        hq_v;
 logic [129:0] hq;
 wire  [129:0] dq = hq_v ? hq : q_q;
 
-// the read window
+// the read window, for GCU rw_g
 logic [22:0] rw_a;
+logic        rw_g;
+wire         rw_k = NG > 1 && !rw_req[0];        // the GCU whose read is taken
 
 // the pixel pipeline, a beat a clock: stage 1 the RAMs read, 2 the pixels picked, 3 blended, then
 // written. Indexed by pixel q in stages 1-2, by field in 3
@@ -382,7 +449,18 @@ always_comb begin
         px_p[q] = 10'(o_s[1:0]) + 10'(u[14:6]);
         sb_ra[q] = px_p[q][9:2];
     end
-    db_ra = wr_on ? (wr_acc ? wr_o + 7'd1 : wr_o) : o_ob;
+    db_ra = wr_acc ? wr_o + 7'd1 : wr_o;
+    dr_ra = o_ob;
+end
+
+// the reads S_OPX's beat needs have landed: SB's beats sb_ra and DR's beat o_ob
+logic opx_ok;
+always_comb begin
+    opx_ok = !rd_go;                    // a read issued last clock is not counted yet
+    if (rd_rcv != 9'd0 && rd_d == D_SB)
+        for (int q = 0; q < 4; q++) if (8'(sb_ra[q]) >= rd_wi) opx_ok = 1'b0;
+    if (rd_rcv != 9'd0 && rd_d == D_DB && {1'b0, o_ob} >= rd_wi) opx_ok = 1'b0;
+    if (rd_q1 && (rd_d1 == D_SB || rd_d1 == D_DB)) opx_ok = 1'b0;  // not receiving yet
 end
 
 // the DB and SB write ports: the reader's beats, or the pipeline's
@@ -390,14 +468,11 @@ always_comb begin
     sb_we = m_rvalid && rd_d == D_SB;
     sb_wa = rd_wi;
     sb_wd = {m_rdata_hi, m_rdata};
-    if (m_rvalid && rd_d == D_DB) begin
-        dbf_we = 4'b1111; dbf_wa = rd_wi[6:0];
-        dbf_wd[0] = m_rdata[15:0]; dbf_wd[1] = m_rdata[31:16];
-        dbf_wd[2] = m_rdata_hi[15:0]; dbf_wd[3] = m_rdata_hi[31:16];
-    end else begin
-        dbf_we = p3_v ? p3_we : 4'b0000; dbf_wa = p3_db;
-        dbf_wd = p3_px;
-    end
+    dr_we = m_rvalid && rd_d == D_DB;
+    dr_wa = rd_wi[6:0];
+    dr_wd = {m_rdata_hi, m_rdata};
+    dbf_we = p3_v ? p3_we : 4'b0000; dbf_wa = p3_db;
+    dbf_wd = p3_px;
 end
 
 function automatic logic [4:0] sat5(input logic [10:0] v);
@@ -422,7 +497,7 @@ always_ff @(posedge clk) begin
         logic [15:0] s;
         s = sbq[q][16*p1_sf[q] +: 16];
         p2_s[q] <= s;
-        p2_d[q] <= dbq[q ^ 1];
+        p2_d[q] <= drq[16*(q ^ 1) +: 16];
         p2_draw[q] <= p1_m[q] && (!o_te || s[15] == o_tv);
     end
 
@@ -464,7 +539,7 @@ always_ff @(posedge clk) begin
     wr_go <= 1'b0;
     dv_go <= 1'b0;
     q_rd <= 1'b0;
-    rw_ack <= 1'b0;
+    rw_ack <= '0;
     p1_v <= 1'b0;
     ch_v <= 1'b0;
     wv_v <= 1'b0;
@@ -473,10 +548,12 @@ always_ff @(posedge clk) begin
     case (st)
     S_IDLE:
         if (rd_busy || wr_busy) ;       // a reset's bursts still finishing
+        else if (q_oth) begin g <= !g; q_rd <= 1'b1; st <= S_POP; end
         else if (q_cnt != '0) begin q_rd <= 1'b1; st <= S_POP; end
-        else if (rw_req && !rw_ack) begin
-            rw_a <= rw_addr;
-            rd_go <= 1'b1; rd_b0 <= rw_addr[22:1]; rd_n <= 9'd1; rd_dst <= D_RB;
+        else if (|rw_req && !(|rw_ack)) begin
+            g <= rw_k; rw_g <= rw_k;
+            rw_a <= rw_addr[rw_k];
+            rd_go <= 1'b1; rd_b0 <= rw_addr[rw_k][22:1]; rd_n <= 9'd1; rd_dst <= D_RB;
             ret <= S_RWIN; st <= S_WAIT;
         end
     S_POP: st <= S_DEC;                 // q_q holds the entry next clock
@@ -497,7 +574,7 @@ always_ff @(posedge clk) begin
     end
     S_VGET:
         if (q_cnt != '0) begin q_rd <= 1'b1; st <= S_VPOP; end
-        else if (rw_req || wv_t == 5'd31) st <= S_VFL;
+        else if (|rw_req || q_oth || wv_t == 5'd31) st <= S_VFL;
         else wv_t <= wv_t + 5'd1;
     S_VPOP: st <= S_VDEC;
     S_VDEC: begin
@@ -523,7 +600,8 @@ always_ff @(posedge clk) begin
     S_WAIT: if (!rd_go && !wr_go && !rd_busy && !wr_busy) st <= ret;
 
     S_CMD:
-        case (op)
+        if (skip[gi] && op != 3'd2 && op != 3'd3) st <= S_NEXT;
+        else case (op)
         3'd1:                           // G:965: a display list, at the word (cmd0 & 0xFFFFFF) / 2
             if (depth == 4'd0) begin
                 depth <= 4'd1; dl_wa <= {1'b0, c0[23:1]}; dl_cnt <= '0; st <= S_DLX;
@@ -532,7 +610,7 @@ always_ff @(posedge clk) begin
                 depth <= depth + 4'd1; dl_wa <= {1'b0, c0[23:1]}; dl_cnt <= '0; st <= S_DLX;
             end else st <= S_NEXT;      // deeper than the stack: skipped (HACKS)
         3'd2: st <= (depth == 4'd0) ? S_NEXT : S_DLEND;
-        3'd3: begin org_x <= c2[9:0]; org_y <= c3[13:0]; st <= S_NEXT; end
+        3'd3: begin org_xs[gi] <= c2[9:0]; org_ys[gi] <= c3[13:0]; st <= S_NEXT; end
         3'd4: begin                     // G:713: fill
             f_d <= {c1w_y[13:0], 10'd0} + 24'(c1w_x);
             f_w <= 11'(c0[9:0]) + 11'd1;
@@ -658,44 +736,92 @@ always_ff @(posedge clk) begin
     S_OROW: begin
         logic [31:0] py, si, off;
         logic [9:0]  ns;
+        logic [8:0]  rn;
+        logic [22:0] wlo, whi, rlo, rhi;
+        logic        rd_need;
         py = o_yf ? 32'(o_hs) - 32'd1 - 32'(o_v[31:6]) : 32'(o_v[31:6]);
         si = o_addr + {py[21:0], 10'd0};
         ns = 10'(o_umax[25:6]) + 10'd1;
-        o_si <= si; o_s <= si[23:0]; o_ns <= ns;
-        o_k0 <= '0;
-        o_d <= o_fbr;
         // u of pixel 0 of the row's first beat, off pixels before the row's first
         off = (o_fbr[1:0] == 2'd0) ? 32'd0 : (o_fbr[1:0] == 2'd1) ? 32'(o_xs) :
               (o_fbr[1:0] == 2'd2) ? 32'(o_xs2) : 32'(o_xs3);
         o_ub <= o_xf ? 32'(o_umax) + off : 32'd0 - off;
-        if (o_sbok && si == o_si) st <= S_OCH;
-        else begin
-            o_sbok <= 1'b1;
-            rd_go <= 1'b1; rd_b0 <= si[23:2]; rd_n <= 9'((11'(si[1:0]) + 11'(ns) + 11'd3) >> 2); rd_dst <= D_SB;
-            ret <= S_OCH; st <= S_WAIT;
+        rn = 9'((11'(si[1:0]) + 11'(ns) + 11'd3) >> 2);
+        // the held write's beats against the read's (a read past the top of VRAM counts as overlapping)
+        wlo = 23'(o_b0[21:0]) + 23'(tr_lo);
+        whi = 23'(o_b0[21:0]) + 23'(tr_hi);
+        rlo = {1'b0, si[23:2]};
+        rhi = rlo + 23'(rn) - 23'd1;
+        rd_need = !(o_sbok && si == o_si);
+        if (o_wdef && rd_need && (rhi[22] || !(rhi < wlo || rlo > whi))) begin
+            // the read would see VRAM before the write: write first, then come back
+            wr_go <= 1'b1; wr_b0 <= 22'(o_b0 + 30'(tr_lo)); wr_n <= 9'(tr_hi - tr_lo) + 9'd1;
+            wr_db <= 1'b1; wr_o0 <= tr_lo;
+            o_wdef <= 1'b0;
+            ret <= S_OROW; st <= S_WAIT;
+        end else begin
+            o_si <= si; o_s <= si[23:0]; o_ns <= ns;
+            o_k0 <= '0;
+            o_d <= o_fbr;
+            if (rd_need) begin
+                o_sbok <= 1'b1;
+                rd_go <= 1'b1; rd_b0 <= si[23:2]; rd_n <= rn; rd_dst <= D_SB;
+            end
+            st <= S_OCH;
         end
     end
-    // a chunk: up to 128 beats of the row from o_d; the destination read first when blending
-    S_OCH: begin
+    // a chunk: up to 128 beats of the row from o_d; the destination read when blending, queued
+    // behind the source row's (rd_room) and ahead of the previous row's held write, so that both
+    // reads' latency passes under that write
+    S_OCH: if ((o_bl == 2'd0 || (rd_room && !rd_go)) && !wr_busy && !wr_go) begin
         logic [15:0] rem;
         logic [9:0]  n, e;
+        logic [22:0] wlo, whi, rlo, rhi;
         rem = 16'(o_wd) - 16'(o_k0);
         n = 10'd512 - 10'(o_d[1:0]);
         if (rem < 16'(n)) n = rem[9:0];
         e = 10'(o_d[1:0]) + n - 10'd1;
-        o_n <= n;
-        o_nb <= 8'(e[9:2]) + 8'd1;
-        o_ob <= '0;
-        o_fm <= from_q(o_d[1:0]);
-        o_lm <= upto_q(e[1:0]);
-        o_b0 <= o_d[31:2];
-        be_clr <= 1'b1;
-        if (o_bl != 2'd0) begin
-            rd_go <= 1'b1; rd_b0 <= o_d[23:2]; rd_n <= 9'(e[9:2]) + 9'd1; rd_dst <= D_DB;
-            ret <= S_OPX; st <= S_WAIT;
-        end else st <= S_OPX;
+        // the held write against this read (an object wider than a VRAM row reaches the next row; a
+        // read past the top of VRAM counts as overlapping): if they meet, the write goes first
+        wlo = 23'(o_b0[21:0]) + 23'(tr_lo);
+        whi = 23'(o_b0[21:0]) + 23'(tr_hi);
+        rlo = {1'b0, o_d[23:2]};
+        rhi = rlo + 23'(e[9:2]);
+        if (o_wdef && o_bl != 2'd0 && (rhi[22] || !(rhi < wlo || rlo > whi))) begin
+            wr_go <= 1'b1; wr_b0 <= 22'(o_b0 + 30'(tr_lo)); wr_n <= 9'(tr_hi - tr_lo) + 9'd1;
+            wr_db <= 1'b1; wr_o0 <= tr_lo;
+            o_wdef <= 1'b0;
+        end else begin
+            o_n <= n;
+            o_nb <= 8'(e[9:2]) + 8'd1;
+            o_ob <= '0;
+            o_fm <= from_q(o_d[1:0]);
+            o_lm <= upto_q(e[1:0]);
+            o_b0n <= o_d[31:2];
+            if (o_bl != 2'd0) begin
+                rd_go <= 1'b1; rd_b0 <= o_d[23:2]; rd_n <= 9'(e[9:2]) + 9'd1; rd_dst <= D_DB;
+            end
+            st <= S_OWD;
+        end
     end
-    S_OPX: begin
+    // the held write (DB, o_b0, tr_*) once the reads are on the port (the port's grant to this
+    // master is a read or a write burst, never both on offer)
+    S_OWD:
+        if (!o_wdef) begin
+            o_b0 <= o_b0n; be_clr <= 1'b1;
+            st <= S_OPX;
+        end else if (!rd_go && rd_iss == 9'd0) begin
+            wr_go <= 1'b1; wr_b0 <= 22'(o_b0 + 30'(tr_lo)); wr_n <= 9'(tr_hi - tr_lo) + 9'd1;
+            wr_db <= 1'b1; wr_o0 <= tr_lo;
+            o_wdef <= 1'b0;
+            st <= S_OBG;
+        end
+    // the chunk is built in DB once the held write has read it out
+    S_OBG: if (!wr_busy && !wr_go) begin
+        o_b0 <= o_b0n; be_clr <= 1'b1;
+        st <= S_OPX;
+    end
+    S_OPX: if (opx_ok) begin
         logic [29:0] b;
         b = o_b0 + 30'(o_ob);
         p1_v <= 1'b1;
@@ -709,8 +835,11 @@ always_ff @(posedge clk) begin
         if (8'(o_ob) == o_nb - 8'd1) st <= S_ODRN;
     end
     S_ODRN:
-        if (pipe_empty) begin
-            if (tr_any) begin
+        if (pipe_empty && !rd_busy) begin
+            if (tr_any && o_k0 + 15'(o_n) == o_wd && o_j + 17'd1 != o_hd) begin
+                o_wdef <= 1'b1;
+                st <= S_OCHN;
+            end else if (tr_any) begin
                 wr_go <= 1'b1; wr_b0 <= 22'(o_b0 + 30'(tr_lo)); wr_n <= 9'(tr_hi - tr_lo) + 9'd1;
                 wr_db <= 1'b1; wr_o0 <= tr_lo;
                 ret <= S_OCHN; st <= S_WAIT;
@@ -775,17 +904,22 @@ always_ff @(posedge clk) begin
 
     S_RWIN: begin
         rw_data <= rw_a[0] ? rb[0][63:32] : rb[0][31:0];
-        rw_ack <= 1'b1;
+        rw_ack[NG > 1 && rw_g] <= 1'b1;
         st <= S_IDLE;
     end
 
     default: st <= S_IDLE;
     endcase
 
-    if (reset) begin st <= S_IDLE; depth <= '0; org_x <= '0; org_y <= '0; hq_v <= 1'b0; end
+    if (reset) begin
+        st <= S_IDLE; depth <= '0; hq_v <= 1'b0; g <= 1'b0; o_wdef <= 1'b0;
+        for (int i = 0; i < NG; i++) begin org_xs[i] <= '0; org_ys[i] <= '0; end
+    end
 end
 
-assign idle = st == S_IDLE && q_cnt == '0 && !push && !rd_busy && !wr_busy;
+always_comb
+    for (int i = 0; i < NG; i++)
+        idle[i] = q_cs[i] == '0 && !push[i] && !((NG > 1 && g) == (i != 0) && (st != S_IDLE || rd_busy || wr_busy));
 
 // synthesis translate_off
 // benches: a state held 100,000 clocks without the engine idle is reported once
@@ -794,6 +928,7 @@ st_t sim_st;
 always_ff @(posedge clk) begin
     sim_st <= st;
     sim_same <= (st != sim_st || idle) ? 0 : sim_same + 1;
+    if (rd_go && !rd_room) $display("fb_gcu: read issued in %s with no room (iss %0d rcv %0d q1 %0d)", st.name(), rd_iss, rd_rcv, rd_q1);
     if (sim_same == 100000)
         $display("fb_gcu: stuck in %s (ret %s): q_cnt %0d rd_iss %0d rd_rcv %0d wr_on %0d",
                  st.name(), ret.name(), q_cnt, rd_iss, rd_rcv, wr_on);

@@ -1,0 +1,18 @@
+{"groups": [
+  {"name": "PPC403 CPU",           "match": "u_board\\|u_cpu",                        "color": "#e6194b"},
+  {"name": "Caches",               "match": "u_board\\|u_mem",                        "color": "#fabed4"},
+  {"name": "DMA",                  "match": "u_board\\|u_dma",                        "color": "#dcbeff"},
+  {"name": "GCU engine",           "match": "u_board\\|(g_gcu2\\.u_eng|u_gcu\\|g_eng)", "color": "#42d4f4"},
+  {"name": "GCU registers",        "match": "u_board\\|(u_gcu|g_gcu2\\.u_gcu2)",      "color": "#aaffc3"},
+  {"name": "GCU display",          "match": "^emu\\|sys\\|u_disp",                    "color": "#3cb44b"},
+  {"name": "HDMI rotation",        "match": "^emu\\|sys\\|g_rot",                     "color": "#808000"},
+  {"name": "ATA / ATAPI",          "match": "u_board\\|u_ata",                        "color": "#f58231"},
+  {"name": "YMZ280B",              "match": "u_board\\|g_ymz",                        "color": "#ffe119"},
+  {"name": "SPU",            "match": "^emu\\|sys\\|(g_spu|g_pat)|u_board\\|u_spu", "color": "#9a6324"},
+  {"name": "Flash, RTC",           "match": "u_board\\|(u_flash|u_rtc)",              "color": "#911eb4"},
+  {"name": "KBM I/O, MIDI", "match": "u_board\\|g_kbm|^emu\\|sys\\|g_midi|^emu\\|(u_midiout|u_usbmidi)", "color": "#f032e6"},
+  {"name": "SDRAM",                "match": "^emu\\|sys\\|u_sdram",                   "color": "#4363d8"},
+  {"name": "DDR3 arbiter",         "match": "^emu\\|sys\\|u_ddr3",                    "color": "#000075"},
+  {"name": "Board other",          "match": "^emu\\|sys",                             "color": "#bfef45"},
+  {"name": "hps_io",               "match": "^emu\\|hps_io",                          "color": "#469990"}
+]}

@@ -31,6 +31,7 @@
 --   CORE_FRAMES   frames to record (default 8)
 --   CORE_EVENTS   "frame:port:mask:len,..." presses before the window (e.g. 9000:IN0:10:10)
 --   CORE_VRAM_ITEM  save-item index, if the search picks the wrong one
+--   CORE_GCU      1: Keyboardmania's second GCU (0x7E800100, gcu_sub, rscreen, the second VRAM item)
 
 local out     = os.getenv("CORE_OUT")
 local game    = os.getenv("CORE_GAME") or "?"
@@ -38,10 +39,13 @@ local from    = tonumber(os.getenv("CORE_FRAME") or "0")
 local nframes = tonumber(os.getenv("CORE_FRAMES") or "8")
 local events  = os.getenv("CORE_EVENTS") or ""
 
+local unit = tonumber(os.getenv("CORE_GCU") or "0")
+local base = 0x7e800000 + 0x100 * unit
+
 local m   = manager.machine
 local sp  = m.devices[":maincpu"].spaces["program"]
-local scr = m.screens[":screen"]
-local gcu = m.devices[":gcu"]
+local scr = m.screens[":screen"] or m.screens[unit == 0 and ":lscreen" or ":rscreen"]
+local gcu = m.devices[unit == 0 and ":gcu" or ":gcu_sub"]
 
 local items = {}                     -- keep the item userdata alive
 local function find_vram()
@@ -50,12 +54,16 @@ local function find_vram()
 		items[1] = emu.item(want)
 		return items[1], want
 	end
+	local seen = 0
 	for i = 0, 100000 do
 		local it = emu.item(i)
 		if it.size == 0 and it.count == 0 then break end
 		if it.size == 4 and it.count == 8388608 then
-			items[1] = it
-			return it, i
+			if seen == unit then
+				items[1] = it
+				return it, i
+			end
+			seen = seen + 1
 		end
 	end
 	error("no 8,388,608-word 32-bit save item")
@@ -96,9 +104,9 @@ local shadow = false
 local function install_shadow()
 	if shadow then return end
 	shadow = true
-	subs[#subs + 1] = sp:install_write_tap(0x7e800000, 0x7e80006f, "vramwin_regs0",
+	subs[#subs + 1] = sp:install_write_tap(base, base + 0x6f, "vramwin_regs0",
 		function(offset, data, mask) note(offset, data, mask) end)
-	subs[#subs + 1] = sp:install_write_tap(0x7e800078, 0x7e8000ff, "vramwin_regs1",
+	subs[#subs + 1] = sp:install_write_tap(base + 0x78, base + 0xff, "vramwin_regs1",
 		function(offset, data, mask) note(offset, data, mask) end)
 end
 
@@ -175,7 +183,7 @@ emu.register_frame_done(function()
 		dump_regs("regs_in.txt")
 		dump_items("items_in.txt")
 		logf = assert(io.open(out .. "/gcu_writes.txt", "w"))
-		subs[#subs + 1] = sp:install_write_tap(0x7e800000, 0x7e8000ff, "vramwin_win", on_write)
+		subs[#subs + 1] = sp:install_write_tap(base, base + 0xff, "vramwin_win", on_write)
 		recording = true
 		print(string.format("VRAMWIN_IN frame %d item %d", frame, vram_index))
 	elseif frame == from + 1 then

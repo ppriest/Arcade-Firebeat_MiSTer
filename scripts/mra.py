@@ -171,6 +171,7 @@ def build_image(mra_path, zip_path, size=None):
         raise ValueError("no <rom index=\"0\"> in the .mra")
 
     out = bytearray()
+    patches = []
     paths = zip_path if isinstance(zip_path, (list, tuple)) else [zip_path]
     zs = [zipfile.ZipFile(pth) for pth in paths]
     try:
@@ -183,6 +184,8 @@ def build_image(mra_path, zip_path, size=None):
                     out += _literal_bytes(el.text) * int(el.get("repeat"), 0)
                 else:
                     out += _literal_bytes(el.text)
+            elif el.tag == "patch":
+                patches.append((int(el.get("offset"), 0), _literal_bytes(el.text)))
             elif el.tag == "interleave":
                 bits = int(el.get("output"))
                 parts = [(_part_data(z, p), p.get("map")) for p in el]
@@ -192,6 +195,10 @@ def build_image(mra_path, zip_path, size=None):
     finally:
         for zz in zs:
             zz.close()
+    for off, data in patches:          # MiSTer's <patch>: bytes over the assembled image
+        if off + len(data) > len(out):
+            raise ValueError(f"<patch> at {off:#x} is past the image's end")
+        out[off:off + len(data)] = data
     if size is not None and len(out) != size:
         raise ValueError(f"image is {len(out)} bytes, expected {size}")
     return bytes(out)

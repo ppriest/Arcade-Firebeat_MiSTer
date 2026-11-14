@@ -74,7 +74,11 @@ module tb_sys (
     logic [15:0] sensor [4] = '{16'd0, 16'd0, 16'd0, 16'd0};
     logic [3:0]  cabinet_info = 4'd8;
 
-    firebeat_sys u (.reset(1'b0), .dump_start(1'b0), .dump_on_err(1'b0), .dump_busy(), .dump_held(), .aud_l(), .aud_r(), .nv_wr(), .*);
+    firebeat_sys u (.reset(1'b0), .dump_start(1'b0), .dump_on_err(1'b0), .dump_busy(), .dump_held(), .aud_l(), .aud_r(), .nv_wr(),
+        .kbm_en(1'b0), .kbd('{24'd0, 24'd0}), .wheel('{8'd0, 8'd0}), .midi_txd(), .midi_tx_v(),
+        .midi_tx_byte(), .midi_mute(1'b0), .screen(2'd0), .flip(1'b0), .rot_en(1'b0), .rot_cw(1'b0),
+        .rot_late(), .brd_wd(), .perf(),
+        .FB_EN(), .FB_FORMAT(), .FB_WIDTH(), .FB_HEIGHT(), .FB_BASE(), .FB_STRIDE(), .FB_VBL(1'b0), .FB_LL(1'b0), .*);
     assign mon_v = u.u_board.mon_v, mon_we = u.u_board.mon_we, mon_addr = u.u_board.mon_addr;
     assign mon_mask = u.u_board.mon_mask, mon_data = u.u_board.mon_data;
     assign dcr_v = u.u_board.u_dma.dcr_we && u.u_board.u_dma.dcr_hit, dcr_a = u.u_board.u_dma.dcr_addr;

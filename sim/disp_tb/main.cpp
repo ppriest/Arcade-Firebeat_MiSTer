@@ -5,7 +5,11 @@
 //
 //   scripts/run_verilator.sh disp_tb +win=debug/ppp11-vram21400 [+end=out] [+lat=20] [+busy=10] [+gap=0]
 //   scripts/run_verilator.sh disp_tb +vram=<raw> +regs=<regs.txt> +screen=<bin>
+//   scripts/run_verilator.sh disp_tb -GKBM=1 +kbm=debug/kbm-screens4000 +mode=0|1|2 [+flip=1]
 //
+// +flip=1: the picture turned 180 degrees, compared with MAME's turned 180 degrees here.
+// +kbm: Keyboardmania's two GCUs (scripts/mame_kbm_screens.py). +mode: the first GCU's screen, the
+// second's, or both stacked, each compared with its MAME screen.
 // VRAM is the window's vram_<end>.raw, the registers its regs_<end>.txt; the third frame out is
 // compared with screen_<end>.bin (0xFFRRGGBB, MAME's 5 to 8 bit expansion), every visible pixel.
 // The first 10 differing pixels are printed, every one with ALLDIFF set in the environment.
@@ -40,8 +44,8 @@ static void frame_edge() {
 
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
-    std::string win, end = "in", vram, regs, screen;
-    int test = 0;
+    std::string win, end = "in", vram, regs, screen, kbm;
+    int test = 0, mode = 0, flip = 0;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a.rfind("+win=", 0) == 0) win = a.substr(5);
@@ -49,6 +53,9 @@ int main(int argc, char **argv) {
         else if (a.rfind("+vram=", 0) == 0) vram = a.substr(6);
         else if (a.rfind("+regs=", 0) == 0) regs = a.substr(6);
         else if (a.rfind("+screen=", 0) == 0) screen = a.substr(8);
+        else if (a.rfind("+kbm=", 0) == 0) kbm = a.substr(5);
+        else if (a.rfind("+mode=", 0) == 0) mode = atoi(a.c_str() + 6);
+        else if (a.rfind("+flip=", 0) == 0) flip = atoi(a.c_str() + 6);
         else if (a.rfind("+lat=", 0) == 0) ddr.lat = atoi(a.c_str() + 5);
         else if (a.rfind("+busy=", 0) == 0) ddr.busy = atoi(a.c_str() + 6);
         else if (a.rfind("+gap=", 0) == 0) ddr.gap = atoi(a.c_str() + 5);
@@ -59,13 +66,51 @@ int main(int argc, char **argv) {
         if (screen.empty()) screen = win + "/screen_" + end + ".bin";
     }
 
+    if (!kbm.empty()) {
+        vram = kbm + "/vram_0.raw";
+        regs = kbm + "/regs_0.txt";
+        screen = kbm + "/screen_" + (mode == 1 ? "1" : "0") + ".bin";
+    }
+
     std::vector<uint32_t> vin(0x800000);
     FILE *f = fopen(vram.c_str(), "rb");
     if (!f || fread(vin.data(), 4, vin.size(), f) != vin.size()) { fprintf(stderr, "cannot read %s\n", vram.c_str()); return 1; }
     fclose(f);
     for (uint32_t i = 0; i < Ddr3Model::BEATS; i++) ddr.mem[i] = (uint64_t)vin[2 * i + 1] << 32 | vin[2 * i];
 
+    if (!kbm.empty()) {
+        std::vector<uint32_t> v2(0x800000);
+        f = fopen((kbm + "/vram_1.raw").c_str(), "rb");
+        if (!f || fread(v2.data(), 4, v2.size(), f) != v2.size()) { fprintf(stderr, "no vram_1.raw\n"); return 1; }
+        fclose(f);
+        for (uint32_t i = 0; i < Ddr3Model::BEATS; i++) ddr.mem2[i] = (uint64_t)v2[2 * i + 1] << 32 | v2[2 * i];
+    }
+
     t = new Vtb_disp;
+    t->screen = mode;
+    if (!kbm.empty()) {
+        uint32_t rb[64] = {0};
+        rb[0] = 0x027F0F2F; rb[1] = 0x01DF0920; rb[2] = 0x5F010000;
+        FILE *fb = fopen((kbm + "/regs_1.txt").c_str(), "r");
+        if (!fb) { fprintf(stderr, "no regs_1.txt\n"); return 1; }
+        unsigned ab, vb;
+        while (fscanf(fb, "%x %x", &ab, &vb) == 2) if (ab < 0x100) rb[ab / 4] = vb;
+        fclose(fb);
+        for (int k = 0; k < 3; k++) t->b_crtc[k] = rb[k];
+        t->b_layer = rb[0x10 / 4] & 0xFFFF;
+        uint64_t al = 0, x = 0, y = 0, w = 0, h = 0;
+        for (int k = 0; k < 4; k++) {
+            uint64_t aw = (rb[0x14 / 4 + k / 2] >> (k & 1 ? 0 : 16)) & 0xFFFF;
+            al |= aw << 16 * k;
+            x |= (uint64_t)(rb[0x20 / 4 + k] & 0xFFFF) << 16 * k;
+            y |= (uint64_t)(rb[0x20 / 4 + k] >> 16) << 16 * k;
+            w |= (uint64_t)(rb[0x30 / 4 + k] & 0xFFFF) << 16 * k;
+            h |= (uint64_t)(rb[0x30 / 4 + k] >> 16) << 16 * k;
+            t->b_base[k] = rb[0x40 / 4 + k];
+        }
+        t->b_alpha = al; t->b_x = x; t->b_y = y; t->b_w = w; t->b_h = h;
+        t->b_6c = rb[0x6C / 4] & 0xFFFF;
+    }
     // device_reset's CRTC, then the file's registers
     uint32_t rf[64] = {0};
     rf[0] = 0x027F0F2F; rf[1] = 0x01DF0920; rf[2] = 0x5F010000;
@@ -90,12 +135,20 @@ int main(int argc, char **argv) {
     t->fr_alpha = al; t->fr_x = x; t->fr_y = y; t->fr_w = w; t->fr_h = h;
     t->reg_6c = rf[0x6C / 4] & 0xFFFF;
     t->test = test;
+    t->flip = flip;
 
     int hv = (rf[0] >> 16) + 1, vv = (rf[1] >> 16) + 1;
     std::vector<uint32_t> ref((size_t)hv * vv);
     f = fopen(screen.c_str(), "rb");
     if (!f || fread(ref.data(), 4, ref.size(), f) != ref.size()) { fprintf(stderr, "cannot read %s (%dx%d)\n", screen.c_str(), hv, vv); return 1; }
     fclose(f);
+    if (mode == 2) {
+        ref.resize((size_t)hv * vv * 2);
+        f = fopen((kbm + "/screen_1.bin").c_str(), "rb");
+        if (!f || fread(ref.data() + (size_t)hv * vv, 4, (size_t)hv * vv, f) != (size_t)hv * vv) { fprintf(stderr, "no screen_1.bin\n"); return 1; }
+        fclose(f);
+        vv *= 2;
+    }
 
     t->reset = 1;
     for (int i = 0; i < 8; i++) tick();
@@ -114,7 +167,7 @@ int main(int argc, char **argv) {
         if (de && !prev_de) { px = 0; py++; }
         if (de) {
             uint32_t got = (uint32_t)t->vid_r << 16 | t->vid_g << 8 | t->vid_b;
-            uint32_t exp = (px < hv && py < vv) ? ref[(size_t)py * hv + px] & 0xFFFFFF : 0xFFFFFFFF;
+            uint32_t exp = (px < hv && py < vv) ? ref[flip ? (size_t)(vv - 1 - py) * hv + (hv - 1 - px) : (size_t)py * hv + px] & 0xFFFFFF : 0xFFFFFFFF;
             if (got != exp) {
                 if (bad < 10 || getenv("ALLDIFF")) fprintf(stderr, "  pixel %d,%d: %06X, MAME %06X\n", px, py, got, exp);
                 bad++;

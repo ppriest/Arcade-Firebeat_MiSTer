@@ -5,6 +5,9 @@
 //   scripts/run_verilator.sh boot_tb +boot=debug/ppp11-boot +frames=N [+bios=FILE] [+lat=N]
 //       [+cd0=BIN +cue0=CUE +cd1=BIN +cue1=CUE] [+trace=FROM] [+iolog=FROM] [+save=FRAME] [+restore=FILE]
 //       [+events=FRAME:MASK:LEN,...] [+reset_at=CLOCK] [+sdwait=MIN[:MAX]] [+dump=FRAME] [+state=FILE]
+//       [+in0=HEX] [+in2=HEX] [+cabinet=N] [+htot=N]
+//   Keyboardmania: build with -GKBM=1, run with +in0=FF +in2=FE +cabinet=2 +htot=687 (the game's
+//   CRTC: 687 x 416 at 16.6666 MHz, MAME's 58.3172 Hz). Its keyboards are idle (Active Sense).
 //
 // Without <boot>/nvram_start the board starts blank, as MAME without NVRAM files: the flash 0xFF,
 // the RTC in its reset state (MAME's nvram_default).
@@ -25,14 +28,17 @@
 // <boot>/dump_<FRAME>.bin as the HPS fetches it (DDR3 0x34000000-0x3661FFFF, then VRAM
 // 0x30000000-0x31FFFFFF), checks its SDRAM block against the bench's SDRAM, and releases the board.
 // +state=FILE starts the board from such a file instead of power-on: SDRAM, VRAM and the register
-// block loaded, the CPU from its first instruction there. MAME's streams do not apply then. The
-// devices' blocks are written once both slots have served their mount (whose media change would
+// block loaded, the CPU from its first instruction there. +dump also writes dump_<FRAME>.bin.pos, the
+// frame and each stream's position; with it beside FILE the frames continue from the dump's and
+// MAME's streams are compared from where they stood (the same capture only). Without it they do
+// not apply. The devices' blocks are written once both slots have served their mount (whose media change would
 // overwrite the drives'), and the CPU is held until then.
 //
 // The board starts as the core loads it: the BIOS and the dongle image (the .mra), the flash chips
 // and the RTC from the NVRAM files the MAME run started from (<boot>/nvram_start). The discs come
-// through hps_io image slots served here: each .bin's frames, then its TOC block (fb_cd_slot's
-// format, from the .cue), with an HPS-like delay before each request's data. vblank follows
+// through hps_io image slots served here: each disc's logical frames (the .bin's, with a zero frame
+// for each of a PREGAP's, as MAME's logframeofs and MiSTer_Firebeat), then its TOC block
+// (fb_cd_slot's format, from the .cue), with an HPS-like delay before each request's data. vblank follows
 // control_w bit 0 as MAME's screen does: 640x480 of 800x525 at 25.175 MHz until it is set, then
 // the 685x416 frame at 16.6666 MHz.
 //
@@ -77,6 +83,7 @@ static std::string stream_of(const Acc &x) {
     uint32_t a = x.a;
     bool r = x.rw == 'R';
     if ((a & 0xfffffff0) == 0x40000000) return (r && a == 0x40000000 && (x.m & 0xff000000)) ? "" : (r ? "SPU_R" : "SPU_W");
+    if (r && a == 0x7e800178) return "";      // KBM: the second GCU's status, polled
     if ((a & 0xffffff00) == 0x7e800000) {
         if (r && a == 0x7e800078) return "";
         if (r) return a >= 0x7e800080 ? "GCU_VRAM_R" : "GCU_R";
@@ -103,6 +110,12 @@ static std::string stream_of(const Acc &x) {
         snprintf(k, sizeof k, "IO_%c%03X", r ? 'R' : 'W', a & 0xffc);
         return k;
     }
+    if ((a & 0xfffff000) == 0x70000000) {      // KBM's MIDI UART: register (a >> 8) & 15
+        int reg = (a >> 8) & 15;
+        if (r && ((reg & 7) == 2 || (reg & 7) == 5)) return "";   // IIR and LSR: polls
+        return std::string(r ? "MIDI_R" : "MIDI_W") + ((reg & 8) ? "1" : "0");
+    }
+    if ((a & 0xfffffff0) == 0x70008000) return r ? "WHEEL_R" : "WHEEL_W";
     if ((a & 0xffff0000) == 0x70000000) return r ? "XIRQ_R" : "XIRQ_W";
     return r ? "OTHER_R" : "OTHER_W";
 }
@@ -168,8 +181,8 @@ int main(int argc, char **argv) {
     std::string state_f = arg("state", "");
     std::vector<uint8_t> stf;
     if (!state_f.empty()) {
-        stf = load(state_f, 0x2620000 + 0x2000000);
-        if (stf.size() != 0x2620000 + 0x2000000 || stf[0] != 0x44 || stf[1] != 0x53 || stf[2] != 0x42 || stf[3] != 0x46) {
+        stf = load(state_f, 0x2620000 + 0x4000000);
+        if ((stf.size() != 0x2620000 + 0x2000000 && stf.size() != 0x2620000 + 0x4000000) || stf[0] != 0x44 || stf[1] != 0x53 || stf[2] != 0x42 || stf[3] != 0x46) {
             fprintf(stderr, "%s: not a state dump\n", state_f.c_str()); return 1;
         }
     }
@@ -211,24 +224,36 @@ int main(int argc, char **argv) {
     }
 
     // the discs: frames, padding to 512, then the TOC block (2 blocks)
-    struct Disc { FILE *f = nullptr; uint64_t frames = 0, data_bytes = 0, size = 0; std::vector<uint8_t> toc; };
+    // seg: per track, its first logical frame (the pregap's), its INDEX 01 frame and the .bin frame
+    // there; frames: the logical frames
+    struct Seg { uint64_t pg, log, file; };
+    struct Disc { FILE *f = nullptr; uint64_t frames = 0, data_bytes = 0, size = 0; std::vector<uint8_t> toc; std::vector<Seg> seg; };
     Disc disc[2];
     for (int d = 0; d < 2; d++) {
         disc[d].f = fopen(cdf[d].c_str(), "rb");
         if (!disc[d].f) { fprintf(stderr, "cannot open %s\n", cdf[d].c_str()); return 1; }
         fseek(disc[d].f, 0, SEEK_END);
-        disc[d].frames = (uint64_t)ftell(disc[d].f) / 2352;
-        disc[d].data_bytes = ((disc[d].frames * 2352 + 511) / 512) * 512;
-        disc[d].size = disc[d].data_bytes + 1024;
-        std::vector<std::pair<uint32_t, bool>> trk;      // start, audio
+        uint64_t file_frames = (uint64_t)ftell(disc[d].f) / 2352;
+        std::vector<std::pair<uint32_t, bool>> trk;      // logical start, audio
         FILE *c = fopen(cuef[d].c_str(), "r");
         char line[256]; bool audio = false;
+        uint64_t gap = 0, pg = 0;                        // pregap frames so far, this track's
         while (c && fgets(line, sizeof line, c)) {
-            if (strstr(line, "TRACK")) audio = strstr(line, "AUDIO") != nullptr;
+            if (strstr(line, "TRACK")) { audio = strstr(line, "AUDIO") != nullptr; pg = 0; }
             int mm, ss, ff;
-            if (sscanf(line, " INDEX 01 %d:%d:%d", &mm, &ss, &ff) == 3) trk.push_back({(uint32_t)((mm * 60 + ss) * 75 + ff), audio});
+            if (sscanf(line, " PREGAP %d:%d:%d", &mm, &ss, &ff) == 3) pg = (mm * 60 + ss) * 75 + ff;
+            if (sscanf(line, " INDEX 01 %d:%d:%d", &mm, &ss, &ff) == 3) {
+                uint64_t fs = (mm * 60 + ss) * 75 + ff;
+                disc[d].seg.push_back({fs + gap, fs + gap + pg, fs});
+                gap += pg;
+                trk.push_back({(uint32_t)(fs + gap), audio});
+            }
         }
         if (c) fclose(c);
+        if (disc[d].seg.empty()) disc[d].seg.push_back({0, 0, 0});
+        disc[d].frames = file_frames + gap;
+        disc[d].data_bytes = ((disc[d].frames * 2352 + 511) / 512) * 512;
+        disc[d].size = disc[d].data_bytes + 1024;
         auto &t = disc[d].toc;
         t.assign(1024, 0);
         t[0] = 'F'; t[1] = 'B'; t[2] = 'T'; t[3] = 'C'; t[4] = (uint8_t)trk.size(); t[5] = 1;
@@ -244,6 +269,11 @@ int main(int argc, char **argv) {
         static std::vector<uint8_t> cache[2]; static uint64_t cbase[2] = {~0ull, ~0ull};
         if (off >= disc[d].data_bytes) { uint64_t o = off - disc[d].data_bytes; return o < 1024 ? disc[d].toc[o] : 0; }
         if (off >= disc[d].frames * 2352) return 0;
+        uint64_t fr = off / 2352;
+        const Seg *g = &disc[d].seg[0];
+        for (const Seg &x : disc[d].seg) if (fr >= x.pg) g = &x;
+        if (fr < g->log) return 0;                      // a pregap
+        off = (fr - g->log + g->file) * 2352 + off % 2352;
         uint64_t b = off & ~65535ull;
         if (cbase[d] != b) { cache[d].assign(65536, 0); fseek(disc[d].f, (long)b, SEEK_SET); fread(cache[d].data(), 1, 65536, disc[d].f); cbase[d] = b; }
         return cache[d][off - b];
@@ -294,7 +324,10 @@ int main(int argc, char **argv) {
     Vtb_boot *t = new Vtb_boot;
     t->clk = 0; t->reset = 1; t->ce = 1; t->tb_en = 1; t->irq_force = 0;
     t->dma_hold = 1;                    // MAME's order of accesses
-    t->in0 = 0x7f; t->in1 = 0xff; t->in2 = 0xff; t->in3 = 0xff; t->sensors = 0; t->cabinet_info = 8;
+    const uint8_t in0_idle = strtoul(arg("in0", "7f").c_str(), nullptr, 16);
+    const uint64_t htot = atol(arg("htot", "685").c_str());
+    t->in0 = in0_idle; t->in1 = 0xff; t->in2 = strtoul(arg("in2", "ff").c_str(), nullptr, 16); t->in3 = 0xff;
+    t->sensors = 0; t->cabinet_info = atoi(arg("cabinet", "8").c_str());
     t->vblank = 0; t->img_mounted = 0; t->sd_ack = 0; t->sd_buff_wr = 0; t->rtc_set = 0; t->por = 1;
     t->rtc_time = 0x07'01'01'01'00'00'00ull;   // 2001-01-01 00:00:00, a Monday (weekday 2); MAME uses the host's
     auto tick = [&]() { t->clk = 0; t->eval(); t->clk = 1; t->eval(); };
@@ -315,6 +348,7 @@ int main(int argc, char **argv) {
             for (int b = 0; b < 4; b++) sd[a + b] = w >> (24 - 8 * b);
         }
         memcpy(ddr.mem.data(), stf.data() + 0x2620000, 0x2000000);
+        if (stf.size() > 0x2620000 + 0x2000000) memcpy(ddr.mem2.data(), stf.data() + 0x4620000, 0x2000000);
         t->ce = 0; t->reset = 0;
         tick();
         auto poke = [&](int sel, uint32_t v) { t->dbg_we = 1; t->dbg_wsel = sel; t->dbg_wdata = v; tick(); t->dbg_we = 0; };
@@ -340,11 +374,24 @@ int main(int argc, char **argv) {
     // +state's device blocks: 0 waiting for the mounts, 1 writing, 2 done
     int ld_phase = stf.empty() ? 2 : 0, ld_i = 0, served[2] = {0, 0};
     long ld_wait = 0;
-    // the register-block words +state writes (fb_board st_a): the devices, ATAPI to the DCR store
-    const uint32_t ld_lo = 0x100, ld_hi = 0x600;
+    // the register-block words +state writes (fb_board st_a): the devices, ATAPI to the extend
+    // board's word, less the YMZ280B's read-only block
+    const uint32_t ld_lo = 0x100, ld_skip = 0x600, ld_skip_to = 0x700, ld_hi = 0x8C1;
     long frames = 0;
     bool vb = false;
     long dev_total = 0;
+    if (!stf.empty()) if (FILE *pf = fopen((state_f + ".pos").c_str(), "r")) {
+        char k[32], rw;
+        size_t pos; long cmp; int have, dv; unsigned a, m, d;
+        if (fscanf(pf, "frame %ld total %ld\n", &frames, &dev_total) == 2)
+            while (fscanf(pf, "%31s %zu %ld %d %d %c %x %x %x\n", k, &pos, &cmp, &dv, &have, &rw, &a, &m, &d) == 9) {
+                Stream &q = st[k];
+                q.pos = pos; q.compared = cmp; q.diverged = dv; q.have_last = have;
+                q.last_rtl.rw = rw; q.last_rtl.a = a; q.last_rtl.m = m; q.last_rtl.d = d;
+            }
+        fclose(pf);
+        fprintf(stderr, "state: frame %ld, MAME's streams resumed\n", frames);
+    }
     long anchor_rtl = stf.empty() ? -1 : 0;   // +state: events count from the run's first frame
     // the bench's own state, saved with the model
     auto bench_io = [&](auto &os, bool out) {
@@ -422,11 +469,11 @@ int main(int argc, char **argv) {
                 }
             } else if (q.state == 3) { t->sd_ack &= ~(1 << d); q.state = 0; sd_active = -1; served[d]++; }
         }
-        // vblank as MAME's screen: 59.94 Hz (25.175 MHz, 525 lines, 45 blank) or 58.49 Hz (16.6666 MHz,
-        // 416 lines, 32 blank), from control_w bit 0
+        // vblank as MAME's screen: 59.94 Hz (25.175 MHz, 525 lines, 45 blank) or, at 16.6666 MHz, +htot
+        // clocks a line, 416 lines, 32 blank (ppp 685: 58.49 Hz), from control_w bit 0
         bool b24 = t->control & 1;
-        uint64_t period = b24 ? 1139840 : 1112223;
-        uint64_t vstart = b24 ? 1052160 : 1016889;
+        uint64_t period = b24 ? htot * 416 * 4 : 1112223;
+        uint64_t vstart = b24 ? htot * 384 * 4 : 1016889;
         frame_clk++;
         if (frame_clk >= period) frame_clk = 0;
         bool v = frame_clk >= vstart;
@@ -435,7 +482,8 @@ int main(int argc, char **argv) {
         if (ld_phase == 0 && served[0] && served[1] && sd_active < 0 && ++ld_wait > 1000) { ld_phase = 1; ld_i = ld_lo; }
         if (ld_phase == 1) {
             t->ld_we = 1; t->ld_a = ld_i; t->ld_d = stw(0x1000 + 4 * ld_i);
-            if (++ld_i == (int)ld_hi) {
+            if (++ld_i == (int)ld_skip) ld_i = ld_skip_to;
+            if (ld_i == (int)ld_hi) {
                 ld_phase = 2; t->ce = 1;
                 fprintf(stderr, "state: device blocks loaded at clock %llu; the CPU runs\n", (unsigned long long)cyc);
             }
@@ -447,7 +495,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "frame %ld: anchor reached (MAME frame %ld)\n", frames, anchor_mame);
         }
         if (anchor_rtl >= 0) {
-            uint8_t in0 = 0x7f;
+            uint8_t in0 = in0_idle;
             for (auto &v : evs) {
                 long at = anchor_rtl + (v.f - anchor_mame);
                 if (frames >= at && frames < at + v.len) in0 &= ~v.mask;
@@ -505,7 +553,17 @@ int main(int argc, char **argv) {
             FILE *o = fopen(f.c_str(), "wb");
             fwrite(ddr.dump.data(), 8, ddr.dump.size(), o);
             fwrite(ddr.mem.data(), 8, ddr.mem.size(), o);
+            for (uint64_t w : ddr.mem2) if (w) { fwrite(ddr.mem2.data(), 8, ddr.mem2.size(), o); break; }    // KBM's second VRAM
             fclose(o);
+            if (FILE *pf = fopen((f + ".pos").c_str(), "w")) {
+                fprintf(pf, "frame %ld total %ld\n", frames, dev_total);
+                for (auto &kv : st) {
+                    Stream &q = kv.second;
+                    fprintf(pf, "%s %zu %ld %d %d %c %x %x %x\n", kv.first.c_str(), q.pos, q.compared, (int)q.diverged, (int)q.have_last,
+                            q.have_last ? q.last_rtl.rw : 'R', q.last_rtl.a, q.last_rtl.m, q.last_rtl.d);
+                }
+                fclose(pf);
+            }
             const uint8_t *dp = (const uint8_t *)ddr.dump.data();
             long bad = 0;
             for (uint32_t a = 0; a < 0x2600000; a += 4) {
