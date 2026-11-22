@@ -27,6 +27,11 @@ module tb_sdram (
     output logic         w_ack,
     output logic [31:0]  w_rdata,
 
+    input  logic         s_req,            // the fourth port, idle here
+    input  logic [26:4]  s_addr,
+    output logic         s_ack,
+    output logic [127:0] s_rdata,
+
     input  logic         d_we,
     input  logic [26:1]  d_addr,
     input  logic [15:0]  d_din,

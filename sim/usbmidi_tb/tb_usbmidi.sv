@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // kbm_usbmidi against sim/usbmidi_tb/vectors.txt (make_vectors.py): bytes on rxd at 31250 baud,
-// 8N1, at 66.667 MHz, and the keys checked after each message.
+// 8N1, at 66.667 MHz, and the keys (and P1's wheel) checked after each message.
 //
 //     python sim/usbmidi_tb/make_vectors.py
 //     scripts/run_verilator.sh usbmidi_tb
@@ -13,8 +13,10 @@ module tb_usbmidi;
 	logic        enable = 0, rxd = 1, split = 0;
 	logic [3:0]  offset = 0;
 	logic [23:0] keys0, keys1;
+	logic [7:0]  wheel;
+	logic        wheel_v;
 
-	kbm_usbmidi dut (.clk, .enable, .rxd, .offset, .split, .keys0, .keys1);
+	kbm_usbmidi dut (.clk, .enable, .rxd, .offset, .split, .keys0, .keys1, .wheel, .wheel_v);
 
 	localparam real BIT = 32000.0;     // ns
 
@@ -45,6 +47,15 @@ module tb_usbmidi;
 				if (keys0 !== a[23:0] || keys1 !== c[23:0]) begin
 					errs++;
 					if (errs <= 10) $display("check %0d: keys %06h %06h, expected %06h %06h", checks, keys0, keys1, a[23:0], c[23:0]);
+				end
+			end
+			"H": begin
+				int w, v;
+				n = $fscanf(fd, "%h %d", w, v);
+				checks++;
+				if (wheel !== w[7:0] || wheel_v !== v[0]) begin
+					errs++;
+					if (errs <= 10) $display("check %0d: wheel %02h valid %0d, expected %02h %0d", checks, wheel, wheel_v, w[7:0], v);
 				end
 			end
 			default: begin $display("FAIL: bad command %s", op); $finish; end

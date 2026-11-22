@@ -3,7 +3,7 @@
 // The GCU's command engine on a captured window (scripts/mame_vram_window.py), against MAME:
 //
 //   scripts/run_verilator.sh gcu_tb +win=debug/ppp11-vram21400 [+lat=20] [+busy=10] [+gap=0] [+scan=1|2] [+skip]
-//       [+limit=N] [+rst=N] [+prof]
+//       [+limit=N] [+rst=N] [+prof] [+dump=FILE]
 //
 // VRAM starts as vram_in.raw (MAME's m_vram words, host order: DDR3 word k is m_vram[k]); the
 // register file is loaded from regs_in.txt as scripts/gcu_model.py loads it, then every write of
@@ -23,6 +23,13 @@
 //
 // +prof: the window's clocks by engine state (S_WAIT by the state it returns to), and how many of
 // each had the engine's DDR3 port waiting.
+//
+// +timed=FILE: write k is not issued before its MAME time, line k of FILE "frame line" (525 lines
+// a frame, scripts' gcu_regtap.lua with CORE_FIFO=1, aligned to gcu_writes.txt), one MAME frame
+// to one 58.4875 Hz frame here, the first write at the start of a vblank. A write the GCU holds
+// (a full queue, a frame register write waiting for the engine) is late, as on the board. With
+// +scan=1 every frame shown is reported: its black pixels in each third of the 384 lines, and
+// its late lines.
 
 #include "Vtb_gcu.h"
 #include "verilated.h"
@@ -47,7 +54,46 @@ static const char *st_name[32] = {"IDLE", "POP", "DEC", "WAIT", "CMD", "NEXT", "
     "VGET", "VPOP", "VDEC", "VFL", "FROW", "FNXT", "OD1", "OD2", "OD3", "OD4", "OSET", "OROW", "OCH",
     "OPX", "ODRN", "OCHN", "CROW", "CPX", "CDRN", "CNXT", "RWIN", "OWD", "OBG"};
 
+// +timed with +scan=1: per-frame black pixel counts by third
+static bool mon_on = false;
+static int mon_x = 0, mon_y = -1, mon_de = 0, mon_vs = 1, mon_fr = 0;
+static long mon_blk[3];
+static unsigned mon_late = 0;
+
+static void mon_tick() {
+    if (t->vid_vs && !mon_vs) {
+        if (mon_y >= 0) {
+            printf("  frame %2d: black %6ld %6ld %6ld (of 65536 each), late lines %u, engine %s\n", mon_fr,
+                   mon_blk[0], mon_blk[1], mon_blk[2], (unsigned)(t->late - mon_late),
+                   t->gcu_idle ? "idle" : "busy");
+        }
+        mon_fr++;
+        mon_late = t->late;
+        mon_y = -1;
+        mon_blk[0] = mon_blk[1] = mon_blk[2] = 0;
+    }
+    mon_vs = t->vid_vs;
+    if (!t->ce_pix) {
+        return;
+    }
+    int de = !(t->vid_hb || t->vid_vb);
+    if (de && !mon_de) {
+        mon_x = 0;
+        mon_y++;
+    }
+    if (de) {
+        if (mon_x < 512 && mon_y >= 0 && mon_y < 384 && t->vid_r == 0 && t->vid_g == 0 && t->vid_b == 0) {
+            mon_blk[mon_y / 128]++;
+        }
+        mon_x++;
+    }
+    mon_de = de;
+}
+
 static void tick() {
+    if (mon_on) {
+        mon_tick();
+    }
     if (rst_clk && clocks == rst_clk) {
         rst_hit = true; rst_busy = !t->gcu_idle;
         t->reset = 1; t->eval();
@@ -97,6 +143,7 @@ int main(int argc, char **argv) {
     long limit = 0, rst_at = 0;
     int scan = 0;
     bool prof = false, skip = false;
+    std::string dump, timed;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a.rfind("+win=", 0) == 0) win = a.substr(5);
@@ -107,7 +154,9 @@ int main(int argc, char **argv) {
         else if (a.rfind("+limit=", 0) == 0) limit = atol(a.c_str() + 7);
         else if (a.rfind("+rst=", 0) == 0) rst_at = atol(a.c_str() + 5);
         else if (a == "+prof") prof = true;
+        else if (a.rfind("+dump=", 0) == 0) dump = a.substr(6);  // the VRAM at the end, as vram_out.raw
         else if (a == "+skip") skip = true;   // fb_gcu skip held: no draw command draws
+        else if (a.rfind("+timed=", 0) == 0) timed = a.substr(7);
     }
 
     std::vector<uint32_t> vin = load_words(win + "/vram_in.raw");
@@ -132,6 +181,22 @@ int main(int argc, char **argv) {
         if ((a < 0x60 && a != 0x54 && a != 0x58) || a == 0x60 || a == 0x64 || a == 0x68 || a == 0x6C)
             regs.push_back({a, v});
     fclose(f);
+    // a window whose CRTC registers MAME left at 0 (bm3: the mode comes from control_w) scans out
+    // the 512 x 384 mode of fb_gcu_disp's test picture
+    static const unsigned crtc512[3] = {0x01FF0447, 0x017F0515, 0x5F030064};
+    bool crtc0 = false;
+    for (auto &r : regs) {
+        if (r.first == 0x00 && r.second == 0) {
+            crtc0 = true;
+        }
+    }
+    if (crtc0) {
+        for (auto &r : regs) {
+            if (r.first <= 0x08) {
+                r.second = crtc512[r.first >> 2];
+            }
+        }
+    }
     for (auto &r : regs) bus_write(r.first, r.second, 0xFFFFFFFF);
 
     struct W { uint32_t a, m, d; };
@@ -144,13 +209,55 @@ int main(int argc, char **argv) {
     fclose(f);
     if (limit && (size_t)limit < wr.size()) wr.resize(limit);
 
+    const double frame = 66.667e6 / 58.4875;
+    std::vector<uint64_t> due;            // +timed: each write's earliest clock, from the window's start
+    if (!timed.empty()) {
+        f = fopen(timed.c_str(), "r");
+        if (!f) {
+            fprintf(stderr, "no %s\n", timed.c_str());
+            return 1;
+        }
+        long fr, ln, s0 = -1;
+        while (fscanf(f, "%ld %ld", &fr, &ln) == 2) {
+            long s = fr * 525 + ln;
+            if (s0 < 0) {
+                s0 = s;
+            }
+            due.push_back((uint64_t)((s - s0) * frame / 525));
+        }
+        fclose(f);
+        if (due.size() < wr.size()) {
+            fprintf(stderr, "%s: %zu times for %zu writes\n", timed.c_str(), due.size(), wr.size());
+            return 1;
+        }
+        if (scan) {
+            int vb = t->vid_vb;
+            while (!(t->vid_vb && !vb)) {
+                vb = t->vid_vb;
+                tick();
+            }
+            mon_on = true;
+        }
+    }
+    uint64_t late_w = 0, late_max = 0;
+
     uint64_t c0 = clocks, cmds = 0;
     ddr.rd_beats = ddr.wr_beats = 0;
     if (rst_at) rst_clk = c0 + rst_at;
     prof_on = prof;
     for (size_t i = 0; i <= wr.size(); i++) {
         if (i < wr.size()) {
+            if (!due.empty()) {
+                while (clocks - c0 < due[i]) {
+                    tick();
+                }
+            }
+            uint64_t w0 = clocks;
             bus_write(wr[i].a, wr[i].d, wr[i].m);
+            if (!due.empty() && clocks - w0 > 4) {
+                late_w++;
+                late_max = std::max(late_max, (uint64_t)(clocks - w0));
+            }
             if (t->cmd_v) cmds++;
         } else while (!t->gcu_idle && !rst_hit) tick();
         if (rst_hit) {
@@ -183,6 +290,14 @@ int main(int argc, char **argv) {
     }
 
     std::vector<uint32_t> vout = load_words(win + "/vram_out.raw");
+    if (!dump.empty()) {
+        FILE *df = fopen(dump.c_str(), "wb");
+        for (uint32_t i = 0; i < Ddr3Model::BEATS; i++) {
+            uint32_t w[2] = {(uint32_t)ddr.mem[i], (uint32_t)(ddr.mem[i] >> 32)};
+            fwrite(w, 4, 2, df);
+        }
+        fclose(df);
+    }
     long bad = 0, shown = 0;
     for (uint32_t i = 0; i < Ddr3Model::BEATS; i++) {
         uint32_t w[2] = {(uint32_t)ddr.mem[i], (uint32_t)(ddr.mem[i] >> 32)};
@@ -199,7 +314,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    const double frame = 66.667e6 / 58.4875;
+    if (!due.empty()) {
+        printf("timed: %lu writes held, longest %lu clocks\n", (unsigned long)late_w, (unsigned long)late_max);
+    }
+    mon_on = false;
     printf("%zu writes, %lu clocks (%.1f%% of 8 frames), DDR3 %lu read beats %lu write beats, lat %d busy %d%%%s\n",
            wr.size(), (unsigned long)c, 100.0 * c / (8 * frame), (unsigned long)ddr.rd_beats,
            (unsigned long)ddr.wr_beats, ddr.lat, ddr.busy, scan ? ", scan-out" : "");

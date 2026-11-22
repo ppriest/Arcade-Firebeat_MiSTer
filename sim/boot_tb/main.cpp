@@ -5,9 +5,15 @@
 //   scripts/run_verilator.sh boot_tb +boot=debug/ppp11-boot +frames=N [+bios=FILE] [+lat=N]
 //       [+cd0=BIN +cue0=CUE +cd1=BIN +cue1=CUE] [+trace=FROM] [+iolog=FROM] [+save=FRAME] [+restore=FILE]
 //       [+events=FRAME:MASK:LEN,...] [+reset_at=CLOCK] [+sdwait=MIN[:MAX]] [+dump=FRAME] [+state=FILE]
-//       [+in0=HEX] [+in2=HEX] [+cabinet=N] [+htot=N]
+//       [+in0=HEX] [+in2=HEX] [+cabinet=N] [+htot=N] [+diffs=N]
 //   Keyboardmania: build with -GKBM=1, run with +in0=FF +in2=FE +cabinet=2 +htot=687 (the game's
 //   CRTC: 687 x 416 at 16.6666 MHz, MAME's 58.3172 Hz). Its keyboards are idle (Active Sense).
+//   Beatmania III: build with -GPOPN=1 -GBM3=1, run with +bm3 +in0=0F +cabinet=0 +bios=<bm3's BIOS>
+//   +cd0=/+cue0= the program CD. There is no SPU: the PPC's reads of its dual-port RAM are answered
+//   from MAME's, each address's reads in MAME's order, a read held back until the board has made as
+//   many dual-port writes as MAME had before it (the last value again while it waits). The
+//   mailbox interrupt (IRQ3) rises 100,000 clocks after the board has made as many dual-port writes
+//   as MAME had before its next read of the mailbox (0x3FF), and falls at the board's read of it.
 //
 // Without <boot>/nvram_start the board starts blank, as MAME without NVRAM files: the flash 0xFF,
 // the RTC in its reset state (MAME's nvram_default).
@@ -110,7 +116,12 @@ static std::string stream_of(const Acc &x) {
         snprintf(k, sizeof k, "IO_%c%03X", r ? 'R' : 'W', a & 0xffc);
         return k;
     }
-    if ((a & 0xfffff000) == 0x70000000) {      // KBM's MIDI UART: register (a >> 8) & 15
+    if ((a & 0xfffff000) == 0x70001000) {      // BM3's FDC: ports 0x3F0 + ((a >> 2) & 7) at 0x70001FC0
+        if (r && a == 0x70001fd0) return "FDC_MSR";
+        return r ? "FDC_R" : "FDC_W";
+    }
+    if ((a & 0xfffffc00) == 0x74000000) return r ? "" : "DPR_W";   // POPN: reads are the bench's answers
+    if ((a & 0xfffff000) == 0x70000000) {      // KBM's and BM3's MIDI UART: register (a >> 8) & 15
         int reg = (a >> 8) & 15;
         if (r && ((reg & 7) == 2 || (reg & 7) == 5)) return "";   // IIR and LSR: polls
         return std::string(r ? "MIDI_R" : "MIDI_W") + ((reg & 8) ? "1" : "0");
@@ -126,6 +137,7 @@ struct Stream {
     Acc last_rtl{}; bool have_last = false;
     long compared = 0;
     bool diverged = false;
+    long ndiff = 0;                     // differences reported (+diffs)
 };
 
 int main(int argc, char **argv) {
@@ -142,6 +154,7 @@ int main(int argc, char **argv) {
         return (v && *v) ? std::string(v + key.size() + 1) : std::string(def);
     };
     std::string bdir = arg("boot", "debug/ppp11-boot") + "/";
+    const bool bm3 = Verilated::commandArgsPlusMatch("bm3")[0] != 0;
     long frames_max = atol(arg("frames", "600").c_str());
     int lat = atoi(arg("lat", "12").c_str());
     long trace_from = atol(arg("trace", "-1").c_str());
@@ -157,6 +170,7 @@ int main(int argc, char **argv) {
         else regpc.push_back(strtoul(l.substr(0, c).c_str(), nullptr, 16));
         l = c == std::string::npos ? "" : l.substr(c + 1);
     }
+    const long max_diffs = atol(arg("diffs", "1").c_str());   // +diffs=N: report a stream's first N differences, not its first only
     long iolog_from = atol(arg("iolog", "-1").c_str());   // device accesses from this frame, but the GCU's, the inputs' and the sensors'
     long save_at = atol(arg("save", "-1").c_str());
     long long reset_at = atoll(arg("reset_at", "-1").c_str());
@@ -294,6 +308,33 @@ int main(int argc, char **argv) {
         }
     }
 
+    // POPN's dual-port RAM: MAME's reads per byte address, each with the dual-port writes before it
+    struct DpRd { uint8_t d; long wb; };
+    std::vector<std::vector<DpRd>> dpq(1024);
+    std::vector<size_t> dpp(1024, 0);
+    std::vector<uint8_t> dpl(1024, 0);
+    long dp_wr = 0;
+    std::vector<long> mbx;              // MAME's mailbox reads: the dual-port writes before each
+    size_t mbx_i = 0;
+    long mbx_wait = -1;
+    {
+        FILE *io = fopen((bdir + "io.txt").c_str(), "r");
+        char line[128]; long fr = 0, wb = 0;
+        while (io && fgets(line, sizeof line, io)) {
+            if (line[0] == 'F') { fr = atol(line + 2); if (fr > frames_max + 200) break; continue; }
+            Acc x; if (sscanf(line, " %c %x %x %x", &x.rw, &x.a, &x.m, &x.d) != 4) continue;
+            if ((x.a & 0xfffffc00) != 0x74000000) continue;
+            for (int l = 0; l < 4; l++) if (x.m >> (24 - 8 * l) & 0xff) {
+                if (x.rw == 'W') { wb++; continue; }
+                if ((x.a & 0x3fc) + l == 0x3ff) mbx.push_back(wb);
+                auto &q = dpq[(x.a & 0x3fc) + l];
+                uint8_t d = x.d >> (24 - 8 * l);
+                if (q.empty() || q.back().d != d) q.push_back({d, wb});
+            }
+        }
+        if (io) fclose(io);
+    }
+
     // MAME's streams
     std::map<std::string, Stream> st;
     {
@@ -328,6 +369,9 @@ int main(int argc, char **argv) {
     const uint64_t htot = atol(arg("htot", "685").c_str());
     t->in0 = in0_idle; t->in1 = 0xff; t->in2 = strtoul(arg("in2", "ff").c_str(), nullptr, 16); t->in3 = 0xff;
     t->sensors = 0; t->cabinet_info = atoi(arg("cabinet", "8").c_str());
+    // bm3's IO1-4 idle (INPUT_PORTS bm3)
+    t->bm3_sens0 = bm3 ? 0x003f : 0; t->bm3_sens1 = bm3 ? 0x0001 : 0; t->bm3_sens2 = bm3 ? 0x003f : 0; t->bm3_sens3 = bm3 ? 0xffff : 0;
+    t->dp_rd = 0; t->dp_irq = 0;
     t->vblank = 0; t->img_mounted = 0; t->sd_ack = 0; t->sd_buff_wr = 0; t->rtc_set = 0; t->por = 1;
     t->rtc_time = 0x07'01'01'01'00'00'00ull;   // 2001-01-01 00:00:00, a Monday (weekday 2); MAME uses the host's
     auto tick = [&]() { t->clk = 0; t->eval(); t->clk = 1; t->eval(); };
@@ -402,12 +446,14 @@ int main(int argc, char **argv) {
         raw(sd.data(), sd.size()); ddr.io(raw, out);
         raw(&cyc, sizeof cyc); raw(&frame_clk, sizeof frame_clk); raw(&frames, sizeof frames); raw(&vb, sizeof vb);
         raw(&dev_total, sizeof dev_total); raw(&anchor_rtl, sizeof anchor_rtl); raw(sdq, sizeof sdq); raw(&sd_active, sizeof sd_active);
+        raw(dpp.data(), dpp.size() * sizeof dpp[0]); raw(dpl.data(), dpl.size()); raw(&dp_wr, sizeof dp_wr);
+        raw(&mbx_i, sizeof mbx_i); raw(&mbx_wait, sizeof mbx_wait);
         Req *rs[3] = {&cr_, &mr, &wr};
         for (Req *r : rs) raw(r, sizeof *r);
         // the streams by name: which exist depends on how much of MAME's log was read (+frames)
         auto one = [&](Stream &q) {
             raw(&q.pos, sizeof q.pos); raw(&q.last_rtl, sizeof q.last_rtl); raw(&q.have_last, sizeof q.have_last);
-            raw(&q.compared, sizeof q.compared); raw(&q.diverged, sizeof q.diverged);
+            raw(&q.compared, sizeof q.compared); raw(&q.diverged, sizeof q.diverged); raw(&q.ndiff, sizeof q.ndiff);
         };
         uint32_t ns = st.size();
         raw(&ns, sizeof ns);
@@ -517,10 +563,10 @@ int main(int argc, char **argv) {
                         q.diverged = true;
                     } else {
                         const Acc &e = q.mame[q.pos];
-                        if (!q.diverged && (e.rw != x.rw || e.a != x.a || e.m != x.m || ((e.d ^ x.d) & e.m))) {
+                        if (q.ndiff < max_diffs && (e.rw != x.rw || e.a != x.a || e.m != x.m || ((e.d ^ x.d) & e.m))) {
                             fprintf(stderr, "%s DIVERGES at entry %zu: MAME frame %ld %c %08X %08X %08X, RTL frame %ld %c %08X %08X %08X\n",
                                     k.c_str(), q.pos, e.frame, e.rw, e.a, e.m, e.d & e.m, frames, x.rw, x.a, x.m, x.d);
-                            q.diverged = true;
+                            q.diverged = true; q.ndiff++;
                         }
                         q.pos++; q.compared++;
                     }
@@ -539,11 +585,26 @@ int main(int argc, char **argv) {
             }
         }
 
+        // the dual-port RAM's answer, the clock after dp_cs
+        int dp_next = -1;
+        if (t->dp_cs && t->dp_we) dp_wr++;
+        else if (t->dp_cs) {
+            int a = t->dp_addr;
+            auto &q = dpq[a];
+            if (dpp[a] < q.size() && q[dpp[a]].wb <= dp_wr) dpl[a] = q[dpp[a]++].d;
+            dp_next = dpl[a];
+            if (a == 0x3ff && t->dp_irq) { t->dp_irq = 0; mbx_i++; mbx_wait = -1; }
+        }
+        if (!t->dp_irq && mbx_i < mbx.size() && mbx[mbx_i] <= dp_wr) {
+            if (mbx_wait < 0) mbx_wait = 100000;
+            else if (--mbx_wait == 0) t->dp_irq = 1;
+        }
         if (t->c_req && !cr_.on && !t->c_ack) { cr_.on = true; cr_.wait = lat - 1; }
         if (t->m_req && !mr.on && !t->m_ack) { mr.on = true; mr.wait = lat - 1; }
         if (t->w_req && !wr.on && !t->w_ack) { wr.on = true; wr.wait = lat - 1; }
         ddr.sample(t);
         t->clk = 1; t->eval();
+        if (dp_next >= 0) t->dp_rd = dp_next;
         ddr.drive(t);
         for (Req *r : {&cr_, &mr, &wr}) if (r->on && r->wait > 0) r->wait--;
         cyc++;

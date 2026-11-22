@@ -4,7 +4,11 @@
 mixes it, from a scripts/mame/popn_rf5c.lua capture. Writes the bench's stimulus and the
 expected output for a window, and checks the model against MAME's own -samplerate 44100 .wav.
 
-    python sim/rf5c_tb/rf5c_ref.py <capture dir> <out dir> <from s> <to s>
+    python sim/rf5c_tb/rf5c_ref.py <capture dir> <out dir> <from s> <to s> [--sends]
+
+--sends mixes the effect sends (outputs 2 and 3, register 7) in at 0.5 as firebeat_bm3 does.
+A capture with waveram0.txt dumped the wave RAM late (popn_rf5c.lua CORE_FROM): memory events
+before that time are already in the dump and are dropped.
 
 Stimulus, by output sample index k (44.1 kHz from time 0):
     regs.bin  "<IHH" k, word offset, data: register writes, the memory window's excepted
@@ -71,8 +75,9 @@ class Chan:
 
 
 class Model:
-    def __init__(self, mem):
+    def __init__(self, mem, sends=False):
         self.mem = mem
+        self.sends = sends
         self.ch = [Chan() for _ in range(32)]
 
     def write(self, off, d):
@@ -119,6 +124,9 @@ class Model:
             s = i32((s >> 9) * c.level)
             l += i32(s * PAN[c.r[6] & 0xFF])
             r += i32(s * PAN[c.r[6] >> 8])
+            if self.sends:
+                l += i32(s * PAN[c.r[7] & 0xFF])
+                r += i32(s * PAN[c.r[7] >> 8])
             c.pos += c.step
             if (c.pos >> 16) > end:
                 c.pos = (c.pos - (loop << 16)) & 0xFFFFFF0000
@@ -148,6 +156,9 @@ def load(cap):
                 mem.append((k, ext_a & 0xFFFFFF, ext_d))
         else:
             regs.append((k, off, d))
+    if (cap / "waveram0.txt").exists():
+        t0 = float((cap / "waveram0.txt").read_text())
+        mem = [x for x in mem if x[0] >= math.ceil(t0 * FS)]
     rd = np.fromfile(cap / "rf5c_rd.bin", dtype=np.dtype([("t", "<f8"), ("a", "<u4"), ("d", "<u2")]))
     kr = np.floor((rd["t"] - LEAD) * FS).astype(np.int64)
     mem_k = np.concatenate([np.array([m[0] for m in mem], np.int64), kr])
@@ -159,6 +170,7 @@ def load(cap):
 
 def main():
     cap, out, t0, t1 = Path(sys.argv[1]), Path(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+    sends = "--sends" in sys.argv[5:]
     out.mkdir(parents=True, exist_ok=True)
     k0, k1 = int(t0 * FS), int(t1 * FS)
     regs, mk, ma, md = load(cap)
@@ -173,7 +185,7 @@ def main():
     np.rec.fromarrays([np.maximum(mk[sel], k0).astype("<u4"), ma[sel].astype("<u4"),
                        md[sel].astype("<u2")]).tofile(out / "mem.bin")
 
-    m = Model(mem)
+    m = Model(mem, sends)
     ri, mi = 0, 0
     ref = array("h")
     raw = []
@@ -197,7 +209,8 @@ def main():
         w = wave.open(str(wav))
         assert w.getframerate() == FS
         w.setpos(max(0, k0 - 4096))
-        mw = np.frombuffer(w.readframes(k1 - k0 + 8192), "<i2").reshape(-1, 2).astype(np.int64)
+        nch = w.getnchannels()          # bm3's has a third, silent, channel after the speaker's two
+        mw = np.frombuffer(w.readframes(k1 - k0 + 8192), "<i2").reshape(-1, nch)[:, :2].astype(np.int64)
         ours = np.trunc(np.array(raw, np.int64).reshape(-1, 2) / 2.0)
         for side in (0, 1):
             n, off = min((int((mw[o:o + len(ours), side] != ours[:, side]).sum()), o)

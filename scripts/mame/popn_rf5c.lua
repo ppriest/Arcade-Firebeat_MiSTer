@@ -10,9 +10,17 @@
 --                           so these are what the streamed buffers held when read.
 --              waveram0.bin the 32 MB at the first register write, little-endian words
 --   CORE_TO    frame to exit at
+--   CORE_FROM  seconds: the wave RAM dumped then (its time in waveram0.txt) and the reads logged
+--              from then, for a window late in a run; register writes are logged throughout
+--   CORE_EVENTS "frame:port:mask:len,..." inputs to press (as bm3_survey.lua)
 
 local out = os.getenv("CORE_OUT")
 local to  = tonumber(os.getenv("CORE_TO") or "7400")
+local from = tonumber(os.getenv("CORE_FROM") or "-1")
+local pressed, held = {}, {}
+for f, port, mask, len in (os.getenv("CORE_EVENTS") or ""):gmatch("(%d+):(%w+):(%x+):(%d+)") do
+    pressed[#pressed + 1] = { f = tonumber(f), port = ":" .. port, mask = tonumber(mask, 16), len = tonumber(len) }
+end
 
 local m   = manager.machine
 local spu = m.devices[":audiocpu"]
@@ -39,10 +47,13 @@ local function dump(name)
     end
     fw:write(table.concat(buf))
     fw:close()
+    local ft = assert(io.open(out .. "/waveram0.txt", "w"))
+    ft:write(string.format("%.9f\n", m.time:as_double()))
+    ft:close()
 end
 
 local function log(rw, offset, data, mask)
-    if not snap then snap = true; dump("waveram0.bin") end
+    if not snap and from < 0 then snap = true; dump("waveram0.bin") end
     fr:write(string.format("%.9f %d %s %06X %04X %04X\n", m.time:as_double(), f_now, rw, offset, data, mask))
 end
 popnrf_subs[#popnrf_subs + 1] = sp:install_read_tap(0x400000, 0x400fff, "rf5c_r",
@@ -51,12 +62,18 @@ popnrf_subs[#popnrf_subs + 1] = sp:install_write_tap(0x400000, 0x400fff, "rf5c_w
     function(offset, data, mask) log("W", offset, data, mask) end)
 popnrf_subs[#popnrf_subs + 1] = rs:install_read_tap(0, 0x1ffffff, "rf5c_wave",
     function(offset, data, mask)
+        if not snap then return end
         rbuf[#rbuf + 1] = string.pack("<dI4I2", m.time:as_double(), offset, data & 0xFFFF)
         if #rbuf == 65536 then fb:write(table.concat(rbuf)); rbuf = {} end
     end)
 
 popnrf_subs[#popnrf_subs + 1] = emu.add_machine_frame_notifier(function()
     f_now = m.screens[":screen"]:frame_number()
+    if not snap and from >= 0 and m.time:as_double() >= from then snap = true; dump("waveram0.bin") end
+    for _, p in ipairs(pressed) do
+        if f_now == p.f then m.ioport.ports[p.port]:field(p.mask):set_value(1); held[p] = f_now + p.len end
+        if held[p] and f_now >= held[p] then m.ioport.ports[p.port]:field(p.mask):set_value(0); held[p] = nil end
+    end
     if f_now >= to then
         fb:write(table.concat(rbuf)); fb:close(); fr:close()
         m:exit()

@@ -1,0 +1,2 @@
+rtl/board/fb_midibridge.sv
+sim/bridge_tb/tb_bridge.sv

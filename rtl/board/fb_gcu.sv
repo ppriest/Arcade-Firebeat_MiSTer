@@ -826,9 +826,10 @@ always_ff @(posedge clk) begin
         b = o_b0 + 30'(o_ob);
         p1_v <= 1'b1;
         for (int q = 0; q < 4; q++) p1_sf[q] <= px_p[q][1:0] ^ 2'd1;
-        // the beat's pixels in the chunk, below the destination bound (G:748)
+        // the beat's pixels in the chunk, below the destination bound: VRAM_SIZE_HALF, 0x2000000 / 2
+        // pixels (k057714.h:45), the whole 32 MB; beats of 4 pixels, so b < 2^22 (G:667)
         p1_m <= ((o_ob == 7'd0) ? o_fm : 4'b1111) & ((8'(o_ob) == o_nb - 8'd1) ? o_lm : 4'b1111) &
-                {4{b[29:21] == 9'd0}};
+                {4{b[29:22] == 8'd0}};
         p1_db <= o_ob;
         o_ub <= o_xf ? o_ub - 32'(o_xs4) : o_ub + 32'(o_xs4);
         o_ob <= o_ob + 7'd1;

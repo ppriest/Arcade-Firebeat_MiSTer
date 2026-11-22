@@ -13,7 +13,8 @@ module issp_probe #(
 	// concatenated by the caller
 	input  logic [PROBE_W-1:0]   probe,
 
-	// from the host, synchronous to clk
+	// from the host, changing on the JTAG clock: register it in clk before use
+	// (enable_metastability "NO" leaves source_clk unused)
 	output logic [SOURCE_W-1:0]  source
 );
 

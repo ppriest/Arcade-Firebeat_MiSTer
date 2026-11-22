@@ -494,6 +494,407 @@ Decisions (user):
   arcsnd only. Bench `sim/usbmidi_tb` (a 61-key keyboard's capture through a CH345
   cable: channel 1, notes 36-96, velocity 0x50, Note On 0 for off, clock and active sense).
 
+## Phase 10 — Beatmania III (approved)
+
+The `firebeat_bm3` sets (F:1414-1468, 2645-2743): the Pop'n Music board (PPC, one GCU, RTC, flash,
+SPU 68000 + RF5C400 + 32 MB wave RAM, program CD on `ata:0`, `ata:1` an empty CD-ROM drive) with
+an HDD in place of the DVD, plus parts of the Keyboardmania extend board. A revision of its own,
+`Firebeat_bm3` (Decisions taken: one `.rbf` per family), `BM3` beside `POPN` and `KBM`.
+
+### Sets
+
+All `firebeat_bm3`, `init_bm3`, ROT0, BIOS `972maina01.21e`. CHDs for every set are on hand
+(`F:/Emulation/roms/MAME CHDs/bm3*`); sizes from `chdman info`.
+
+| Set | SPU program | Dongle | Program CD | HDD CHD | HDD logical | Geometry (GDDD) |
+|-|-|-|-|-|-|-|
+| bm3 | `972spua01.3q` | good | `gc97201` | `gc97202`, 1.64 GB | 8,438,939,648 | 32192/16/32 |
+| bm3core | `972spua01.3q` | good | `a05jca01` | `a05jca02`, 2.80 GB | 20,493,369,344 | 44672/16/56 |
+| bm36th | `a21jca03.3q` | 0xC0, BAD_DUMP | `a21jca01` | `a21jca02`, 3.29 GB | 20,493,369,344 | 44672/16/56 |
+| bm37th | `a21jca03.3q` | 0xC0, BAD_DUMP | `gcb07jca01` | `gcb07jca02`, 3.76 GB | 20,490,559,488 | 39703/16/63 |
+| bm3final | `a21jca03.3q` | good | `gcc01jca01` | `gcc01jca02`, 4.63 GB | 20,490,559,488 | 39703/16/63 |
+
+First target `bm3`: smallest HDD, good dongle. MAME boots all five to attract, bm36th and bm37th
+included (HARDWARE_NOTES, "Beatmania III in MAME").
+
+### Measured in MAME: bm3 to frame 6,000
+
+`scripts/mame/bm3_survey.lua`, headless, fresh NVRAM with the set's RTC preset, output in
+`debug/bm3-survey/` (gitignored). At frame 6,000 the attract's how-to-play demo is on screen
+(`debug/bm3-survey/0000.png`), 640 x 480; no Test-mode install was needed to get there.
+
+| What | Result |
+|---|---|
+| HDD commands | `EF` (SET FEATURES 03, count 22h: multi-word DMA mode 2) x1, `00` (NOP) x1, `20` (READ SECTORS, PIO) x76, `C8` (READ DMA) x304. No IDENTIFY, no write. LBA addressing (device/head E0h) |
+| HDD volume | 48,012 sectors, 24.6 MB, LBA 0 to 8,936,960 (4.6 GB into the disc). READ DMA of 128 or 256 sectors; 47,104 DMA sectors in 41.0-46.0 s, 4.84 MB/s, busiest second 5.37 MB (MAME's DMA timer caps at 5.7 MB/s, F:1362-1375) |
+| FDC37C665GT (70001000) | 61 accesses at frames 2034 and 2064 only: config mode, SPECIFY, RECALIBRATE, SENSE INTERRUPT, SEEK, then DIR bit 7 (disk change) read. MAME's drive is empty |
+| MIDI PC16552D (70000000) | both channels set up; 55 bytes sent on chan1 (`B0 79 00`, `C0 0C`, effect parameters): the ST-224 effector's commands. Nothing answers in MAME |
+| spectrum analyser (70008000) | 8,124 reads |
+| sensors (7D000340) | 29,368 reads |
+| 7D000330-33F | 5,730 writes, ignored by MAME (`nopw`) |
+| YMZ280B (7D000400) | no access |
+
+Step 1 carried this through a credit and a song, and on the other four sets' boots: HARDWARE_NOTES,
+"Beatmania III in MAME". What it changed here: a stage streams its song from the HDD while it
+plays (1.05 MB every 2.9 or 8.9 s), a deadline for the slot; the FDC is touched only at boot and
+at Start, the same 61 accesses; no HDD write and no YMZ280B access to frame 30,000.
+
+### Reused
+
+| From | What |
+|---|---|
+| popn | `rtl/spu/`: `fb_spu68k` (fx68k, 256 KB RAM, dual-port RAM, 500 Hz timer kludge), `fb_rf5c400`, the wave RAM in SDRAM, the SPU's program ROM in SDRAM; `fb_dvd_slot`'s request path; `fb_ata` with `NO_DISC1` (empty `ata:1`) |
+| kbm | the MIDI PC16552D (two `fb_ns16550`, FIFOs in MLABs) and its IRQ1 path through the extend board's enable bits (bit 0; bit 2 is the FDC's, F:1405-1412) |
+| ppp | the sensor decode at 7D000340-35F, with bm3's 16 registers (F:1471-1493) |
+| all | GCU, display, PPC, caches, DMA, RTC with preset, flash, NVRAM file, state dump, `gen_mra.py` |
+
+### New
+
+| Part | Plan |
+|---|---|
+| HDD (`IDE_HARDDISK`, `machine/atastorage.cpp`) | `fb_atahdd`: atahle's task file, reset and diagnostic as `fb_atapi` has them; SET FEATURES, NOP, READ SECTORS / MULTIPLE / VERIFY, READ DMA (DMARQ as `fb_atapi`'s DMA), SET MULTIPLE, IDENTIFY from the CHD's geometry; writes rejected (MAME opens the CHD read-only, `DISK_IMAGE_READONLY`); others aborted. Bench before hardware |
+| HDD slot | `fb_dvd_slot` with a sector-size parameter (512), one hps_io slot. Requests of up to 8 sectors (one 4 KB CHD hunk) while a command's count allows |
+| FDC | no-disk model: the registers' answers MAME gives with an empty drive (config mode, MSR, DIR, the four commands seen), HACKS |
+| spectrum analyser | reads 0 (no bars in the sound test or the analyser skin; MAME: does not affect gameplay, F:261-263), HACKS |
+| RF5C400 effect sends | outputs 2 and 3 to the speaker at 0.5 (F:1439-1441); MAME applies no effect |
+| turntables | two 10-bit positions (trackball X, F:2241-2245), from the analog stick and the mouse (decision E) |
+| effect dials | seven 5-bit values (F:2247-2268), stepped by buttons (decision D) |
+| 31 kHz pixel clock | decision B |
+
+Left out, as MAME has nothing behind them: MIDI chan1's bytes go nowhere (the ST-224 is not
+emulated); 7D000330 writes; the YMZ280B (no access to frame 30,000, through a song).
+
+### Media plan
+
+- **Program CD**: `ata:0`, hps_io slot 0, CHD through `MiSTer_Firebeat` as every family.
+- **HDD**: hps_io slot 1. `MiSTer_Firebeat` today treats a CHD with no CD tracks and no `DVD `
+  metadata as a CD with no tracks (`support/firebeat/firebeat.cpp`, `firebeat_mount_hook`), so an
+  HDD CHD is served as an empty image. Main branch `firebeat-hdd` (`a2ee478`, worktree
+  `E:\Main_MiSTer-bm3`): a CHD with `GDDD` metadata is served as its logical bytes, 512-byte
+  sectors back to back, by the DVD path (`chd_read` of the hunk), then one 512-byte block:
+  "FBHD", version byte 1 at 4, cylinders, heads, sectors per track and bytes per sector as
+  32-bit little-endian words at 8, 12, 16, 20; zeros to the end. The slot's size is the logical
+  bytes plus 512.
+  A raw image (`chdman extracthd`, 8.4-20.5 GB) also works through stock hps_io with no hook: the
+  core reads 512-byte sectors either way; IDENTIFY then takes MAME's geometry rule for the size.
+- Images over 4 GB need an exFAT card. `img_size` is 64-bit and `sd_lba` addresses 2 TB.
+- Throughput: MAME's attract load averages 4.84 MB/s. Measured on the board so far: a raw image
+  4.66 MB/s in one slot, CD CHDs 1.42 MB/s each with both busy (HARDWARE_NOTES "CD path on the
+  board"). HDD CHDs use LZMA and FLAC on 4 KB hunks; their rate on the HPS is not measured.
+  Loads: 24.3 MB in attract, 8.4-12.6 MB a stage; a slower disc makes these load screens longer.
+  While a stage plays, the game reads 1.05 MB every 2.9 or 8.9 s, alternating (0.18 MB/s on average):
+  each chunk must arrive before the game's buffer runs out, so the slot's worst latency for 1 MB,
+  not its average rate, is what step 2 measures. MAME delivers each chunk in 0.18 s.
+- **Floppy**: none (decision C). MAME's drive is empty; the game runs the same 61 accesses at boot
+  and at Start (initialise, recalibrate, seek, disk-change bit) and goes on. The no-disk model
+  answers those as MAME does.
+
+### Memory plan
+
+As popn, unchanged: SDRAM (128 MB module) for work RAM 32 MB, flash 6 MB, BIOS, the SPU's 512 KB
+program and the 32 MB wave RAM at 0x4000000; DDR3 for VRAM in play; HDD data from the HPS through
+the slot into wave RAM by the SPU's DMA, no buffer beyond a sector or a hunk. No new DDR3 use.
+The FDC image, if decision C adds it, is a slot (sectors on demand), not memory.
+
+### Video
+
+The game runs 640 x 480 of 800 x 525 at 25.175 MHz, 59.94 Hz (HARDWARE_NOTES "Video"; the
+snapshot). The core runs that mode at clk_sys / 4 = 16.667 MHz: 39.7 Hz (HACKS, the 31 kHz entry).
+640 x 480 active at 60 Hz needs 18.4 MHz at least, so clk_sys / 4 cannot carry it with any
+blanking. Options (decision B):
+
+1. **A video clock of 100.7 MHz (4 x 25.175) for the scan-out side** (recommended): `fb_gcu_disp`'s
+   DDR3 reads stay on clk_sys, its line FIFO becomes dual-clock, and the output (pixel enable 1/4,
+   syncs, CLK_VIDEO to `sys/`) runs on the new clock. 59.94 Hz exactly. Departs from "clk_sys is
+   the video clock" (CLAUDE.md), so it needs the user's agreement.
+2. A fractional pixel enable from clk_sys (25.175 / 66.667, 2-3 clocks a pixel): breaks the
+   integer-multiple rule; uneven pixels on direct video.
+3. clk_sys at 100.7 MHz: the PPC does not close there (77 MHz Fmax alone).
+
+### I/O, controls, OSD
+
+| Input | Source | MiSTer |
+|---|---|---|
+| keys 1-5, Start, per player | IO1, IO3 | joypad buttons |
+| foot pedals P1, P2 (active high) | IN0 bits 4-5 | buttons |
+| Test, Service, A, B, Coin | IN0 bits 0-3, IO2 | buttons (J1 line rebuilt per family), Pause |
+| turntables | TURNTABLE_P1/P2, 10-bit position | analog stick X as velocity, mouse X (decision E) |
+| effect dials 1-7 | EFFECT1-7, 0-31 | select, down, up buttons (decision D) |
+| DIP switches | IN3, SPU_DSW (all unknown) | DIP page as popn |
+
+OSD: aspect, flip screen (one path, OSD or DIP), turntable source and sensitivity, autosave,
+Pause; the hidden debug page as the other revisions. None of kbm's or popn's items.
+
+### Area
+
+From `Firebeat_popn` at `0ca0404`, seed 7 (MCP `build_report`, `build_bisect`): 36,259 of 41,910
+ALMs (87%), 443 of 553 RAM blocks, timing met. Per entity from its `fit.rpt`:
+
+| Change from popn | ALMs | Source |
+|---|---|---|
+| `Firebeat_popn` | 36,259 | fit summary |
+| the SPU drive `fb_atapi` out | -1,721 | `fb_atapi:g_spu.u_drv` |
+| `fb_atahdd` in (no packet, TOC, sense, audio) | +700 to +1,000, estimated | |
+| MIDI PC16552D | +707 | kbm, `38441e9` (347 + 360) |
+| sensors, turntables, dials | +150, estimated | |
+| FDC no-disk model, spectrum stub | +150, estimated | |
+| RF5C400 effect sends | +200 to +400, estimated | |
+| dual-clock scan-out (B.1) | +100 to +200, estimated | |
+| **sum** | **~36,600-37,100 (87-89%)** | |
+| a working FDC (C) | +1,500 to +2,500, not measured | would take it to 91-94%, where kbm was seed-sensitive |
+
+In hand if needed: the empty `ata:1` drive costs 2,041 ALMs (`fb_atapi:g_drv[1]`); a model of an
+empty CD-ROM drive only would return most of that, for popn as well. RAM blocks: a few more for the
+sector buffer and FIFOs, beside 110 free.
+
+### Steps, each with its bench before hardware
+
+1. **MAME captures for bm3**: through a credit, song select, a song and the next load (inputs by
+   `CORE_EVENTS`); the HDD volume and rate per load; FDC accesses in play; 68000 and PPC traces
+   (`systrace.lua`); RF5C400 writes and output with the effect sends; whether bm36th and bm37th
+   boot. Exit: a HARDWARE_NOTES section "Beatmania III in MAME", the plan revised and re-approved
+   if a number moves it. **Done**: HARDWARE_NOTES "Beatmania III in MAME"; the plan revised above
+   (the streamed song's deadline on the slot); no number moves the area, memory or step order.
+2. **Main**: HDD CHDs served (`GDDD`). Exit: host check of served bytes against `chdman extractraw`
+   at ranges below and above 4 GB, 0 bytes differing (as popn's DVD check); on the board, the
+   time to serve 2,048 sectors from `gc97202` and `gcc01jca02` at the streamed LBAs, under 2.9 s
+   with margin (the game's buffer depth is not known). **Done**: HARDWARE_NOTES "HDD CHDs through
+   Main": 0 bytes differ on the host; on the board the worst chunk takes 0.83 s (a first read), 0.70 s
+   with both slots reading.
+3. **The revision skeleton** (`BM3`): popn's SPU, the sensors, the MIDI UART, the FDC and spectrum
+   models, the extend board's IRQ1. Exit: `sim/boot_tb -GBM3=1` against MAME's PPC trace to the
+   first HDD command, every ATA, RTC, UART and FDC access in order; an area build, coordinated
+   with whoever holds the build machine. **Done**: HARDWARE_NOTES "bm3's boot against MAME":
+   every stream equal to the end of MAME's 2,100-frame capture but the GCU's and the ATA register
+   reads (the high byte, 0xFF against the current MAME build's 0x00; open); 37,325 ALMs (89%) at seed 7, the memory clock
+   0.208 ns short there.
+4. **The HDD**: `fb_atahdd` and the slot. Exit: `sim/hdd_tb` replays the captured task-file stream
+   on an image cut from `gc97202` (`chdman extractraw`), every data word equal; `sim/spu_tb` with
+   the drive: the wave RAM after the attract load equal to MAME's dump. **Done** (HARDWARE_NOTES
+   "bm3's HDD against MAME"): every read and every DMA word equal. `hdd_tb`'s wave-RAM compare
+   stands in for the `spu_tb` exit (the user's decision): `spu_tb`'s in-order compare diverges at
+   the first interrupt (frame 202), and the SPU's DMA path is popn's.
+5. **Video at 25.175 MHz** (decision B). Exit: `sim/disp_tb` at 640 x 480, the frame equal to
+   MAME's and 59.94 Hz frame timing; direct video checked through a scaler on the board. **Bench
+   exit done** (HARDWARE_NOTES "bm3's video at 25.175 MHz"): MAME's attract frame equal, 59.940 Hz.
+   Build at `2c80a7a`, seed 7: timing met, 36,207 ALMs (86%), 59.945 Hz from the PLL. On the board
+   it boots to the attract mode's play demo at 640 x 480. Open: direct video through a scaler.
+6. **RF5C400 effect sends and the ST-224** (approved). The cabinet's effects
+   unit is a Zoom SampleTrak ST-224 on MIDI chan1 (receive only: program 0-21 the effect, CC 12/13
+   P1/P2 at 0-100, CC 14/15 BPM, CC 80 on/off; its manual p. 75), fed from the RF5C400's effect
+   sends (outputs 2, 3). 19 effects, two settings A/B switched by the pedals, a selector ELEMENT /
+   TRACK (kani.no.coocan.jp bm3mirror effect page). MAME has no ST-224 and plays the sends dry.
+   a. **Measure in MAME**: the seven dials swept and the pedals pressed during a song; every
+      program, CC and RF5C400 effect-send level logged. Exit: the program number of each effect
+      bm3 sends, each dial's function, and which channels send (ELEMENT, TRACK) at what main and
+      send levels. **Done**: 19 programs with their defaults, the dials, the routing
+      (HARDWARE_NOTES "bm3's effects in MAME").
+   b. **The sends in `fb_rf5c400`**, mixed as MAME (outputs 2, 3 at 0.5). Exit: `sim/rf5c_tb`
+      against MAME's .wav for bm3's attract, 0 samples differing. **Done** on a song with the
+      effect on instead (the attract never sends): HARDWARE_NOTES "bm3's effect sends".
+   c. **The bridge**: `fb_midibridge` on bm3 carries chan1's bytes and the send stream (stereo,
+      44.1 kHz) to arcsnd through DDR3, and reads back a heartbeat arcsnd writes. While the
+      heartbeat moves, the core leaves the sends out of its own mix; otherwise it mixes them dry
+      (MAME's sound). Exit: a bench with a modelled server: sends in the ring equal to the mix's,
+      the switch over at the heartbeat's start and stop without a gap. **Done**: `sim/bridge_tb`
+      (HARDWARE_NOTES "bm3's ST-224 bridge"). The switch is at a frame's edge; what the server
+      plays at that moment is its lead behind, which d sets.
+   d. **arcsnd's ST-224** (`MiSTer_ArcadeSoundServer` `src/firebeat/`, a bm3 session): the
+      messages applied, the effects bm3 sends (from a) as our own DSP, the send stream through
+      them and out; effect off, or no message yet, passes the send unmodified. Exit: a host bench
+      on the captured stream and messages, each effect's parameters reaching it; by ear on the
+      board. **Bench done** (arcsnd `2357b96`, `make st224_bench`): passthrough 0 samples differ
+      with no MIDI, with the effect set but off, and on types 0/11/19; each of the 19 types at its
+      defaults changes the signal and both parameters move it; the three 6a captures replay with
+      0 unknown types. Build at `30d2812`, seed 11: timing met (setup +0.211 ns, hold +0.203 ns),
+      deployed. Open: arcsnd on the board (not installed), the ear and the latency.
+   Risk: arcsnd plays 80 ms ahead of its output (`daemon.h` LEAD_FRAMES), so the sends would land
+   80 ms after the core's main path. No channel is on both (a), so there is no doubling, but with
+   the effect on the backing track is on the sends and the keys on the main outputs: the lead
+   lands between them. Decided: a lower lead for this session (not the core's own audio delayed
+   to match); the latency is measured on the board before d is accepted.
+7. **Controls and OSD**. Each deck (the game's 10-bit turntable count, MAME trackball X) from
+   three sources, as the light-gun aim sources (skill `osd_and_peripherals.md`, "Light-gun games"):
+   - analog stick X, absolute: the platter's angle follows the stick past a small dead zone, so a
+     push and return is a scratch out and back;
+   - the d-pad, or the stick at full deflection, incremental: left or right held turns the platter
+     at a steady rate;
+   - mouse X: its counts added, scaled.
+   An OSD option picks each deck's source (Auto, as the light-gun stick's: partial deflection
+   absolute, full deflection incremental), hidden on the other families. Exit: the test mode's
+   input screen on the board shows each key, pedal, turntable direction from every source, and
+   dial.
+   Written: `rtl/bm3_ctrl.sv` (decks, dials, the Effect shift: Up/Down A's program dial, Right/Left
+   B's; seven dial key pairs), the J1 line Key 1-5, Start, Pedal, A, B, Coin, Test, Service, Pause,
+   Effect on both pads; `sim/bm3ctrl_tb` passes (25 checks). Built 5340cdf seed 5 (timing met;
+   seeds 3, 7 and 11 miss on the HDMI PLL clock), deployed as `Firebeat_bm3_30000004.rbf`; the key
+   sounds through the effect sends no longer clip (user report). Open: the test mode.
+8. **On the board**: bm3 to attract, a song played; then bm3core, bm3final, bm36th, bm37th; the
+   standard feature set (flip checked against the unflipped frame rotated 180 degrees, Pause,
+   NVRAM autosave). Exit: README updated; release when the user asks.
+   So far: bm3final boots on the board with both CHDs mounted (user report, build 30d2812;
+   no screenshot).
+   Elements dropping out for a frame (user: all scenes, all sets), HDMI rotated. Probes K and X
+   (`Firebeat_bm3_stp`, attract, about 145 s after launch): the CPU is not the cause (`l_h0=0`,
+   `hold_vbl=0`, 1 of 8,967 frames with a held write); the engine draws 45% of a frame
+   (`l_b0=501978`) and matches MAME on 8 frames (`sim/gcu_tb`, `bm3-vram3200`, 0 pixels differ).
+   With the rotator behind the engine on DDR3 (30000001, f43e0d9) `rot_late=334 scan_late=246`;
+   ahead of it (RT, as kbm; 30000002, 2787831) `rot_late=0 scan_late=4` of 9,930 frames.
+   30000008 still dropped out, and flashed the whole screen black with rotation off (user report).
+   With frame register writes held until the engine is idle (1c57e7b), `Firebeat_bm3_30000010`
+   (73084b9 seed 2) shows the graphics correctly (user report; no screenshot).
+   HDMI at 1440x1080 lost the signal on some launches of 30000009 and 30000010 and not on others;
+   1080p displayed on the one launch tried. Cause not found.
+   Song select's artwork box drew noise (`debug/hw/shot-20261120-203009.png`): the game draws the
+   highlighted song's artwork into a slot at pixel 0xD00000 (frame 7,489, `bm3-vram7487`), and
+   fb_gcu clipped object destinations at 0x800000 pixels where MAME's VRAM_SIZE_HALF is 0x1000000
+   (k057714.h:45); the board's VRAM there held power-on contents. Fixed: `gcu_tb` 0 pixels differ on
+   bm3-vram7487 (73,297 before) and on every earlier window. On the board (`Firebeat_bm3_30000011`,
+   f9d8611 seed 2) the artwork draws (user report; `debug/hw/shot-20261120-232202.png`).
+   Open: with the game running, song select's list misses parts at the top, cut by a horizontal
+   edge that moves (`debug/hw/shot-20261120-232724.png`, `shot-20261121-000549.png`); paused, it
+   is correct (user report). MAME's list stays whole (`debug/bm3-selsnaps`). Still there with
+   CPU GCU accesses held behind DMA (6cfe6ab, `Firebeat_bm3_30000012`). In MAME the CPU rewrites
+   the display list (16,384 port-0 words at 0x3E4000, 128-word rows each after a 0x60 and a
+   0x68 = 0x00FF write) in lines 10-101, and the vblank handler sets 0x68 = 0x0100 and calls the
+   two lists at line 481 without restoring the mode (`scripts/mame/gcu_regtap.lua`).
+   `Firebeat_bm3_stp_30000003` (d85db3e, same RTL as 30000012) misdrew too. On song select the
+   engine runs about half of each frame, in sim and on the board: `gcu_tb` on `bm3-vram7500` (8
+   frames, 0 pixels differ) 3,827,315 clocks, 42%. `Firebeat_bm3_stp_30000004` (6569521: the
+   probe counters only; hold slack -0.424 ns) did not misdraw (user report). Probe X over its
+   42,989 frames: `x_dmacmd=0` (no DMA word reached a port in command mode, so the vblank
+   handler's mode switch did not catch a list row), `x_cmdw_max=1060`, `x_cmdx=35227`.
+   Fix B, the GCU word bypass (`fb_gcu_wbyp`, bm3 only; HACKS): VRAM words go past the command
+   queue, so the list rewrite is no longer held behind the draw. `gcu_tb -GBYP=1`: 0 pixels differ
+   on bm3-vram3200, 7487, 7500 (also with a reset at clock 400,000, and at DDR3
+   latency 40 / 20% busy) and 7800; 7500 in 3,488,403 clocks against 3,827,564 without. The bench
+   feeds writes back to back, so it does not show the rewrite's timing against the frame. On the
+   board as `Firebeat_bm3_30000015` (7ee77e8 seed 2, timing met; not yet run).
+   gcu_tb's scan-out had run on MAME's CRTC registers, 0 in bm3's windows (the mode comes from
+   control_w), so its screen check saw 1 pixel; it now scans out 512 x 384. `+timed` paces the
+   writes at MAME's scanlines (`debug/bm3-regtap-fifo`, offsets equal write for write to
+   bm3-vram7500's): 7 frames shown, no late line, no frame's black count changing beyond the
+   picture's, VRAM 0 pixels differ, with and without the bypass; without it 520 writes held, the
+   longest 347,825 clocks, with it none. The screen against screen_out.bin differs in 184,043 of
+   196,608 pixels: not looked into.
+   Bottom third of the picture flashing black on Firebeat_bm3_30000016 (user report). Probes V
+   and E (69b115c, `Firebeat_bm3_stp_30000006`, seed 2, every clock met): per output frame the
+   black pixels by third, the display's late lines and line builds, DDRAM_BUSY, the engine's
+   start and stop rows, GCU beats into the frame on screen; E the last frame whose bottom third
+   jumped by 16,384 black pixels (fields_V, fields_E). It does not flash (user report). Read at
+   x_frames=38620 (`Firebeat|Firebeat|bm3|`): one frame with late lines (4), the longest line
+   build 2,137 clocks, the longest port wait 366, the longest DDRAM_BUSY run 240; the engine
+   starts in vblank and stops near row 199; e_n=139. v_dwr counts every frame (33,301), but it
+   compares against the bases latched at the end of vblank, so the vblank fill of the next frame
+   counts: not evidence of drawing into the frame on screen. Its game RTL is 30000016's
+   (cbf4c61), which flashes: the flashing follows the build, not the RTL.
+   `Firebeat_bm3_30000017` (e57ef33 seed 2, the same game RTL, every clock met) does not flash
+   (user report); it replaces 30000016's bitstream as the release candidate,
+   `releases/Arcade-Firebeat_bm3_20261122.rbf`. Cause of 30000016's flashing not found: its SDRAM
+   pin registers are packed as in the builds that do not flash.
+   SDRAM timing by seed: with dq_oe decoded a state early (6e7b840), 7ee77e8 seed 2 met (general[1]
+   setup +0.429); seed 9 missed: setup -0.119 (`state` to `SDRAM_A[8]`, `dq_in` to `dq_in2`) and
+   hold -0.600 on the clk_sys to clk_mem crossing (`m_addr2` to `a`, clock skew 0.873 ns)
+   (`build_seed9/output_files/worst_paths_Firebeat_bm3_clocks.rpt`).
+   With the requests resampled in clk_mem, the inputs on a two-cycle multicycle (Firebeat.sdc) and
+   SDRAM_A decoded a state early (cbf4c61), seeds 2, 5 and 9 all met: general[1] setup +0.743,
+   +0.346, +0.662, hold +0.442, +0.428, +0.350. Cost: ppp11-win21357's replayed fill latency
+   12.77 -> 13.71 clocks, its work 89.3% -> 90.7% of a frame (sdram_tb). LogicLock regions are not
+   in Quartus Lite's licence (the fitter drops them), so `dq_in2` is still placed freely.
+9. **The floppy drive** (approved; replaces decision C). The extend board's FDC37C665GT and a
+   3.5" HD drive hold bm3's player data (F:1430-1433, interrupt on IRQ1 through the extend board's
+   enable bit 2, F:1405-1412). MAME leaves the controller's DMA request unconnected, so the game
+   must move data by programmed I/O; a checks that.
+   a. **Measure in MAME** with a disk: a blank 1.44 MB image in `-flop`, a credit, the game's own
+      save offered and taken, then a second credit reading it back. Every FDC access logged (PPC
+      trace) and the image diffed after. Exit: the commands bm3 issues (expected: READ DATA, WRITE
+      DATA, READ ID, SENSE DRIVE STATUS, and FORMAT TRACK if it formats), DMA or not, which
+      sectors it reads and writes, and how often; what the game does with an unformatted or
+      write-protected disk.
+      **Done** (HARDWARE_NOTES "bm3's floppy in MAME"): programmed I/O (SPECIFY ND=1); READ DATA
+      and WRITE DATA by whole cylinder, plus CONFIGURE, SPECIFY, RECALIBRATE, SENSE INTERRUPT,
+      SEEK, SENSE DRIVE STATUS; cylinder 0 read at Start, cylinders 0-2 written and read back at
+      name entry; the save read back in a second session; a disk without a FAT ignored. Not run:
+      a write-protected disk.
+   b. **The controller**: `fb_fdc37c665` grows from the no-disk model to the commands a measured,
+      as MAME's `upd765` answers them (result phases, ST0-ST3, the MSR's RQM/DIO/NDMA handshake,
+      the disk-change bit), from ao486_MiSTer's `floppy.v` (82077-class, GPL; decision H), vendored
+      with its PROVENANCE and adapted in a wrapper where bm3's access differs. Exit: `sim/floppy_tb`
+      replays a's accesses with a modelled image, every read equal and the image afterwards equal
+      to MAME's.
+      **Done**: `rtl/board/fb_floppy.sv` around `floppy.v` with five local changes (PROVENANCE);
+      `sim/floppy_tb` passes all three traces (`bm3-fdc1` 123,014 reads, `bm3-fdc2` 38,968,
+      `bm3-fdc3` 20,513), every read equal and each image afterwards byte-equal to MAME's. The
+      bench's drive model speaks `hps_io`'s block port, so c's exit is this bench once the wrapper
+      is wired in.
+   c. **The image**: an OSD slot (`S2,IMG,Floppy`), a third `hps_io` drive, sectors on demand, as
+      the HDD's (Memory plan: no new memory). One sector per `hps_io` transfer: `BLKSZ(2)` is 512
+      bytes and Main seeks to `sd_lba * 512`. The first wrapper took the blocks for 1024 bytes and
+      sent half the LBA, and the bench's drive model made the same mistake; on the board saves went
+      to half their sector (the root directory to sector 10, data to 17) and odd sectors read stale
+      data (user: FD Write Error). Fixed, with the model as Main serves it; the old wrapper fails
+      `bm3-fdc1` against it (31,395 reads, 28,742 image bytes differ). Written back to the SD card
+      as the game writes; mounting or unmounting sets the disk-change bit. Exit: a bench through
+      `hps_io`'s port model, an image written and read back equal.
+      **Wired**: `fb_floppy` replaces `fb_fdc37c665` in `fb_board`; `hps_io` VDNUM 3, drive 2
+      read/write, `S2,IMG,Floppy` on `Firebeat_bm3` only. The bench's drive model is `hps_io`'s
+      port (b); `sim/floppy_tb` also passes bm3's boot with the drive empty (`bm3-fdc-nodisk`, from
+      `debug/bm3-boot`), which replaced `sim/fdc_tb`. The FDC leaves the state dump (STATE.md).
+   d. **Area**: +1,500 to +2,500 ALMs, not measured, on a build at 37,696 ALMs (90%) and 499 of
+      553 RAM blocks (the step 7 build, seed 3). That reaches 94-96%; above kbm's seed-sensitive
+      96-98% only by a little. If it does not fit: the empty `ata:1` drive's model (2,041 ALMs,
+      "Area" above) reduced to an empty CD-ROM answer. Exit: timing met on a seed.
+      **Done**: 472083e seed 9, 38,385 ALMs (92%), 501 of 553 RAM blocks (+689 ALMs, +2 blocks on
+      the step 7 build); setup slack 0.176 ns (HDMI PLL), hold 0.251 ns. Seeds 5 and 13 miss in the
+      SDRAM controller (`dout`/`k_dout` hold, `dq_in` setup), not the floppy. Deployed as
+      `Firebeat_bm3_30000005.rbf`.
+      Then the empty `ata:1` drive as `fb_atapi_absent` and YC off (37c7b28, seed 9): 35,770 ALMs
+      (85%), 497 RAM blocks, setup slack 0.068 ns; seed 17 misses on the HDMI PLL (-0.317 ns).
+   e. **On the board**: a blank image saved to and read back by the game in a second session, and
+      the file on the SD card equal to what MAME writes for the same steps.
+      On the board with the user's disk (records present): scores and name loaded, the save failed
+      with a disk change error and the image on the SD card was unchanged. MAME's save on that image
+      opens with READ DELETED DATA (`CC`), which `floppy.v` rejected as invalid; added as MAME
+      answers it. `sim/floppy_tb` on `debug/bm3-fdc-save` passes (115,806 reads, image equal; 4 reads
+      differ before the change); fdc1-3 and nodisk still pass.
+      On the board (`Firebeat_bm3_stp_30000005`, probe L, `mnemoniq_test.img`): the save writes
+      cylinder 0 (lba 0-35), reads it back, compares and retries; it gave up. The image held the
+      game's cylinder cache (work RAM 0x802C3948, from the state dump) one sector late, lba 0 junk.
+      The game sends WRITE (0x9A814), then sets the transfer pointer (0x99680); `floppy.v` asked for
+      the first byte at once and the ISR (0x99258) filled the 512-byte FIFO through the previous
+      transfer's pointer. Fix: MAME's head-load delay before the first data request. The benches
+      (fdc-save, fdc1-3, nodisk) pass with it.
+      On the board (`Firebeat_bm3_30000014`, 0829960 seed 9, a fresh copy of the user's image):
+      kobako played to the end, the name read from the disk, the save finished without a retry.
+      The image afterwards: boot sector unchanged, both FATs equal, the files MAME's save leaves
+      (BM31.DAT rewritten, BASIC1P.TXT added at cluster 53), every chain the length of its file.
+
+### Risks
+
+| Risk | Effect | Check |
+|---|---|---|
+| HDD CHD rate on the HPS | longer loads; a song that breaks up if a 1.05 MB streamed chunk misses its 2.9 s gap | step 2 measures the worst 1 MB latency; raw `.img` as the fallback |
+| the video clock | an exception to the clocking rule, a new clock to close | decision B; step 5's build |
+| area and seed sensitivity | 87-89% estimated; popn closed at 87%, kbm needed seeds at 96-98% | step 3's build; the empty-drive reclaim |
+| SPU program 972spua01 / a21jca03 against `fb_spu68k` | a timing-sensitive task kernel (spu_tb, popn) | step 1's 68000 trace; step 4 |
+| home turntables | no controller mapping verified | step 7 |
+
+### Decisions (user)
+
+- **A. HDD delivery: CHD through `MiSTer_Firebeat`** (the Main change in "Media plan").
+- **B. A separate scan-out clock**, 100.7 MHz (4 x 25.175), option 1 under "Video".
+- **C. No floppy:** replaced by step 9 (the drive), approved.
+- **D. Effect dials stepped with buttons:** a button selects the dial, two step it down and up
+  (0-31); all seven start at MAME's default 0.
+- **E. Turntables from the analog stick and the mouse.**
+- **F. Spectrum analyser reads 0.**
+- **G. Memory plan as popn's:** 128 MB SDRAM module, no new DDR3 use.
+- **H. The floppy controller from ao486_MiSTer's `floppy.v`.**
+
+HDD writes: none to frame 30,000 through a credit and a song (step 1), and MAME opens every bm3
+HDD read-only (`DISK_IMAGE_READONLY`, F:2659 and the other sets); what MAME returns for a write is
+not checked. The drive rejects writes.
+
 ## Memory plan (decided)
 
 | What | Size | Where | Traffic (Phase 0) |

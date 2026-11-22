@@ -1,0 +1,4 @@
+rtl/board/ao486_floppy/simple_fifo.v
+rtl/board/ao486_floppy/floppy.v
+rtl/board/fb_floppy.sv
+sim/floppy_tb/tb_floppy.sv

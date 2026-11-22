@@ -714,6 +714,18 @@ hardware setting (`sim/sys_tb` step 6) reproduced the board's screen. Run at lea
 every switch as the hardware core sets it, and count what a concurrency shortcut drops (here,
 starts ignored while busy) instead of trusting a frame time measured over it.
 
+### [Firebeat] A peripheral that answers sooner than the real chip can break the game's code; a trace replay cannot show it
+
+A bench that replays MAME's CPU accesses carries MAME's timing: the CPU in the trace already waited
+as long as the real controller made it. bm3 sends a floppy WRITE, then sets the ISR's transfer
+pointer; MAME's upd765 asks for the first byte after the head load (16 ms here), ao486's
+`floppy.v` asked at once, and the ISR filled the first sector through the previous transfer's
+pointer. `sim/floppy_tb` passed on the save trace (every read and the image equal) while the board
+wrote each sector one LBA late. Found from the board's state dump (the cylinder cache intact in
+work RAM, the image shifted from it) and the game's code. Where a reused controller is faster than
+the one MAME models, check the delays MAME inserts (head load, seek, ID search) before trusting a
+trace bench.
+
 ## Testbench discipline
 
 - **[BallySente] A vendored module's compile WARNING can be a latent fatal.** T80 has carried a
@@ -805,6 +817,11 @@ starts ignored while busy) instead of trusting a frame time measured over it.
   screen wrapped to ~4092 and matched every scanline; tall sprites repeated down the screen only
   while partly off the top. Make every operand of a signed comparison explicitly signed and wide
   enough.
+- **[Firebeat] An unsized `'0` in a conditional makes a signed product unsigned.**
+  `p <= SENDS ? s3 * $signed(pan) : '0;` is an unsigned expression, so a negative `s3` was
+  zero-extended; the RF5C400's effect sends gave near full scale at every level but the silent
+  one. Benches whose windows only had the sends at E0 (level 0) passed. Write `49'sd0`, and feed a
+  bench a stretch where the path under test is non-zero.
 - **[Seta] Diff the whole core against MAME, not just the CPU.** A CPU-only bench against a
   behavioural ROM ends at the first DIP or protection read. Tracing the whole core and aligning it
   against MAME's trace aligned 93,775 of 100,000 accesses with zero data mismatches, and found a
@@ -1254,6 +1271,12 @@ mode; the first attempt with the 68020 sequence took an illegal-instruction exce
 - **A sound CPU that programs the chip once and then goes quiet is an interrupt-path symptom.** 46
   register writes at launch, zero over a later window: the init burst runs from boot code; music is
   sequenced by the chip's timer interrupt.
+- **ISSP sources are not synchronous to `source_clk`.** `[Firebeat]` With
+  `enable_metastability("NO")` the `altsource_probe` source changes on the JTAG clock and
+  `source_clk` is unused, so a source used as a run or clear bit reaches different flops of one
+  `always_ff` in different cycles. On a test reader about 1 run in 10 started with `sum_on` set but
+  `sum_left` not (a one-word checksum) or kept a counter the clear should have zeroed; two flops per
+  source bit in the core's clock took it to 0 in 40 (HARDWARE_NOTES "HDD CHDs through Main").
 
 ## Driving MAME as a reference generator (Lua)
 
@@ -1381,6 +1404,17 @@ mode; the first attempt with the 68020 sequence took an illegal-instruction exce
 Copying a 370 MB disc image ran at 0.01 MB/s. On a 20 MB sample: `pscp` with no protocol option
 (it picks SFTP when offered) and `-sftp` took 177 s, 0.11 MB/s; `-scp` 11.3 s, 1.77 MB/s; a
 `plink ... "cat > file"` pipe 11.7 s, 1.71 MB/s. `deploy.py` and `hw.py` now pass `-scp`.
+
+### [Firebeat] An OSD mount that drops back to the menu: a read-only card or a corrupt file
+
+Main's `user_io_file_mount` takes a file as writable from its mode bits (`FileCanWrite`, a `stat`),
+which exFAT reports as writable on a card the kernel has mounted read-only, and opens it
+`O_RDWR`; the open fails and the OSD returns to its menu with nothing mounted, for every image in
+every core. Seen with every bm3 set after large CHD uploads and a reboot: `touch` in `/media/fat`
+gave "Read-only file system", a CHD read back over SSH had the local md5 (`a21jca01.chd`). With the
+card remounted read-write, three sets' hard disk CHDs still failed to mount until copied again and
+the filesystem repaired: an upload during the card's errors can leave a file of the right size
+that does not open. Check `touch` first, then the md5 on the board, before suspecting the core or Main.
 
 ## Tooling and workflow (Quartus, ModelSim, Verilator, and the shell around them)
 

@@ -10,6 +10,7 @@ messages, so running status is rebuilt here for the second pass. Commands in vec
   O o s      offset index (60, 72, 84, 96, 0, 12, 24, 36, 48) and split
   B bb       send a byte at 31250 baud
   C k0 k1    expect the keys
+  H w v      expect P1's wheel and its valid bit
   W ms       idle (decimal)
 """
 import pathlib
@@ -28,6 +29,8 @@ class Model:
         self.sensed = False
         self.off = 0
         self.split = 0
+        self.wheel = 0
+        self.wv = 0
 
     def clear(self):
         self.on = [0] * 128
@@ -50,6 +53,8 @@ class Model:
                 self.second = False
                 if hi in (8, 9):
                     self.on[self.d1] = int(hi == 9 and b != 0)
+                if hi == 0xB and self.d1 == 1:
+                    self.wheel, self.wv = (b << 1) | (b >> 6), 1
                 if hi == 0xB and self.d1 in (120, 123):
                     self.clear()
 
@@ -82,6 +87,11 @@ def enable(e):
     if not e:
         m.clear()
         m.rs, m.sensed = 0, False
+        m.wv = 0
+
+
+def wheels():
+    cmd("H", f"{m.wheel:02X}", str(m.wv))
 
 
 def opts(o, s):
@@ -148,6 +158,33 @@ cmd("C", "000401", "000401")
 cmd("W", "100")
 m.clear()
 cmd("C", "000000", "000000")
+
+# 5: the mod wheel: P1's under either option, running status, other controllers ignored, valid
+# cleared by disable
+enable(0)
+wheels()
+enable(1)
+opts(0, 0)
+wheels()
+send([0xB3, 1, 0x40], check=False); wheels()
+send([1, 0x7F], check=False); wheels()
+send([7, 0x10], check=False); wheels()
+send([0xB0, 1, 0x00], check=False); wheels()
+for o in range(9):
+    opts(o, 1)
+    base = OFFS[o]
+    send([0x90, base + 24, 0x40, base + 24, 0]); send([0xB0, 1, 0x21], check=False); wheels()
+    send([0x90, base + 23, 0x40]); send([0xB0, 1, 0x55], check=False); wheels()
+    send([0x80, base + 23, 0x40]); send([0xB0, 1, 0x7F], check=False); wheels()
+    hi = min(base + 47, 127)
+    send([0x90, hi, 0x40, hi, 0]); send([0xB0, 1, 0x02], check=False); wheels()
+    send([0x90, base, 0x40, base, 0])
+opts(0, 0)
+send([0xB0, 1, 0x63], check=False); wheels()
+send([0xB0, 123, 0])
+wheels()
+enable(0)
+wheels()
 
 (HERE / "vectors.txt").write_text("\n".join(out) + "\n")
 print(len(out), "commands")

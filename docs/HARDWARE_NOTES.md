@@ -1056,6 +1056,334 @@ LSR on both channels; it writes THR on chan1 only:
 active) read 35,214 times; wheels at `70008000` read 182,744 times; lamps at `7D000804` written
 176,587 times. YMZ280B: 5,606 writes, 148 key-ons over the run, playing from the blank sound flash.
 
+## Beatmania III in MAME (Phase 10 step 1)
+
+Headless runs of `firebeat.exe` (fresh NVRAM, the set's RTC preset), `scripts/mame/bm3_survey.lua`
+for the SPU ATA task file and the PPC's extend-board accesses; output in `debug/bm3-*`
+(gitignored).
+
+**Every set boots without an install.** bm3, bm3core, bm36th, bm37th and bm3final reach their
+attract demos by frame 6,000 (`debug/bm3-boots/boots.png`), bm36th and bm37th with their
+BAD_DUMP 0xC0 dongles. The startup check lists I/O, IBTN, VER, BACKUP, RTC, SPU, HDD, FDD, ST224,
+ATAPI, ISO and passes with an empty floppy drive and nothing on the MIDI UART. Their HDD command
+counts to frame 6,000 are bm3's (below), with different LBAs.
+
+**A credit and a song** (bm3, `debug/bm3-play/`, inputs `ev_play3.txt`: three coins at frame
+6,100, Start at 6,500, then Start and key 1 alternately every 300 frames; 2 coins a credit):
+mode select, the tutorial stage, song select, one song, results, continue, back to attract by
+frame 30,000 (`debug/bm3-play/sheet.png`, a snapshot every 600 frames).
+
+| HDD command | Count to frame 30,000 |
+|---|---|
+| `EF` SET FEATURES (03, count 22h: multi-word DMA 2) | 1 |
+| `00` NOP | 1 |
+| `20` READ SECTORS | 85 |
+| `C8` READ DMA, 128 or 256 sectors | 1,064 |
+| any write, IDENTIFY | 0 |
+
+LBA addressing (device/head E0h), highest sector read 8,936,960 (4.58 GB into the 8.44 GB disc).
+The HDD loads, grouped where reads are 2 s or more apart:
+
+| When | Volume | MAME's time | Note |
+|---|---|---|---|
+| boot, frames 1095-1438 | 0.27 MB | 5.7 s | READ SECTORS, 4-40 sectors |
+| attract, frames 2239-2761 | 24.3 MB | 8.7 s | READ DMA; MAME's DMA caps at 5.7 MB/s (F:1362-1375) |
+| a stage's load (mode select, tutorial, song) | 8.4-12.6 MB | 1.6-4.3 s | 4.1-5.6 MB/s in MAME |
+| while a stage plays | 1.05 MB (2,048 sectors) every 2.9 or 8.9 s, alternating | 0.18 s each | the song streamed: 1.05 MB a 5.9 s on average, 0.18 MB/s |
+
+The streamed chunks set a deadline the loads do not: if they arrive later than the game's buffer
+lasts, the song breaks up. MAME delivers each in 0.18 s; the shortest gap between requests is
+2.9 s.
+
+**FDC37C665GT.** 61 accesses at boot (frames 2034 and 2064) and the same 61 again at Start
+(6501-6533), nothing else: config mode (55 55, CR03 38, CR05 04, AA), DOR resets, CONFIGURE
+(13 00 1E 00), CCR 00, SPECIFY (03 5F 11), RECALIBRATE (07 00), SENSE INTERRUPT (ST0 20h,
+cylinder 0), SEEK to cylinder 1 (0F 04 01), SENSE INTERRUPT (ST0 20h, cylinder 1), DIR 80h (disk
+changed). MAME's drive is empty and the game goes on.
+
+**MIDI PC16552D.** Both channels set up; chan1 sends the ST-224's commands (`B0 79 00`, program
+change `C0 0C`, effect parameters), 141 writes to frame 30,000; nothing answers in MAME.
+
+**Spectrum analyser** 100,328 reads, **sensors** 361,833, **7D000330-33F** 79,542 writes (MAME
+`nopw`), **YMZ280B** none, to frame 30,000.
+
+**Traces for the benches** (bm3, fresh NVRAM, `run.lua` + `systrace.lua`, 4,500 frames):
+`debug/bm3-68k/bm3_68k_sys.trace` (26,651,579 accesses, 815 MB; `CORE_CPU=:audiocpu`, reads of
+200000-34000F, 400000-400FFF, 800000-FFFFFF and the autovectors, SR's mask) and
+`debug/bm3-ppc/bm3_ppc_sys.trace` (18,201,047 accesses, 735 MB; reads and writes of
+70000000-7FFFFFFF without the GCU's 7E800000-7E8000FF). `debug/bm3-rf5c/` (`popn_rf5c.lua` to
+frame 6,000, `-samplerate 44100 -wavwrite`): the RF5C400's register accesses, its wave RAM reads,
+the wave RAM at the first register write, and `out.wav`, 100.1 s with sound from 54.37 s, peak
+20,306, on two of its three channels (the third silent).
+
+## HDD CHDs through Main (Phase 10 step 2)
+
+Main branch `firebeat-hdd` `a2ee478` (`support/firebeat/firebeat.cpp` md5 `99b1abe1…`), format in
+ROADMAP Phase 10 "Media plan". Host check: `MAIN=/mnt/e/Main_MiSTer-bm3
+scripts/main_mister/chd_raw_check.sh`, 64 MB ranges from `chdman extractraw -isb` (MAME 0.289),
+every 16 KB request compared.
+
+| CHD | Start byte | Non-zero bytes in range | Differ |
+|-|-|-|-|
+| gc97202 | 0 | 28,354,469 | 0 |
+| gc97202 | 4,261,412,864 (spans 4 GB) | 0 | 0 |
+| gc97202 | 4,575,723,520 (LBA 8,936,960, the play run's highest) | 10,616,832 | 0 |
+| gc97202 | 8,371,830,784 (to the end) | 0 | 0 |
+| gcc01jca02 | 0 | 28,354,469 | 0 |
+| gcc01jca02 | 4,261,412,864 (spans 4 GB) | 0 | 0 |
+| gcc01jca02 | 4,831,838,208 | 58,865,677 | 0 |
+| gcc01jca02 | 8,556,380,160 (spans 8 GB) | 52,657,799 | 0 |
+| gcc01jca02 | 12,884,901,888 | 66,977,792 | 0 |
+| gcc01jca02 | 17,146,314,752 (spans 16 GB) | 0 | 0 |
+| gcc01jca02 | 20,423,450,624 (to the end) | 0 | 0 |
+| gq986jaa02 (DVD, regression) | 0 | - | 0 |
+
+The geometry block read back: gc97202 `FBHD` v1 32192/16/32/512, size 8,438,940,160;
+gcc01jca02 39703/16/63/512, size 20,490,560,000. Sampling 1 MB every 256 MB above 4 GB found
+data in gc97202 only near 4.57 GB, in gcc01jca02 from 4.83 GB to 13.9 GB.
+
+**On the board.** `FirebeatCD_30000002.rbf` (`rtl/cdtest` at `0a3948d`: a start block and a request
+limit on probes A/B, the ISSP sources synchronised to clk_sys, 66.67 MHz), Main `firebeat-hdd`
+(md5 `6e513d4a…`) installed as `MiSTer_Firebeat`, then restored to the previous binary
+(md5 `e3f02c26…`). `gc97202` in S0, `gcc01jca02` in S1, mounted from the OSD; the slots report
+16,482,305 and 40,020,625 blocks (the data plus the FBHD block). `probe_sequence`: set the start and
+limit, clear, run, read. A 2,048-sector chunk is 64 requests of 16 KB.
+
+| Slot(s) | Start LBAs | 2,048 sectors, s | First word, worst, ms |
+|-|-|-|-|
+| S0 alone, first reads | 983,040; 897,536 region | 0.81-0.83 | 181-195 |
+| S0 alone | 872,960 - 1,032,192, 6 runs | 0.25-0.41 | 0.8-49 |
+| S1 alone | 9,437,184 - 25,165,824, 4 runs | 0.29-0.40 | 13-34 |
+| S0 and S1 together | 1,048,576-1,097,728 with 9,502,720-25,231,360, 4 runs | 0.61-0.70 each | 9-21 |
+
+Unlimited 3 s runs on S0 (with `FirebeatCD_30000001`): 1.8-4.0 MB/s sequential, 1.0 MB/s at random
+16 KB positions. Against the game's 2,048 sectors every 2.9 s (ROADMAP Phase 10), the worst chunk,
+0.83 s, leaves 3.5x.
+
+Data: each run sums the first 4 KB it receives; compared with `chdman extractraw` at the same
+block, 12 of 12 distinct starts on both disks match, and 40 of 40 runs alternating two starts per
+slot with both slots reading. Before the sources were synchronised (`FirebeatCD_30000001`) about
+1 run in 10 that changed the start gave a one-word sum and kept the previous latency_max
+(LESSONS_LEARNED, "ISSP sources are not synchronous").
+
+## bm3's boot against MAME (Phase 10 step 3)
+
+**Capture.** `scripts/mame_boot_capture.py bm3 --frames 2100 --nvram debug/bm3-ppc/nv/bm3` ->
+`debug/bm3-boot/io.txt` (gitignored): 793,945 compared accesses in 57 streams. The BIOS makes no
+device access until frame 972 (the RAM tests), loads the program CD from frame 1172, runs the game
+from 1290; the FDC's 61 accesses fall at frames 1935 and 1964-1965 in this run (2034 and 2064 in
+step 1's). The PPC reads the SPU's mailbox (0x3FF, IRQ3) from frame 1933.
+
+**Bench.** `sim/boot_tb -GPOPN=1 -GBM3=1 +bm3 +in0=0F +cabinet=0`, BIOS `972maina01.21e` with the
+.mra's fast-boot patch (`gen_mra.fast_boot`: the RAM tests make no device access, so no stream
+changes, and the board's slower RAM tests are skipped: HACKS, the uncached-access entry), the program CD
+`gc97201` as `chdman extractcd` .bin/.cue. No SPU: the dual-port RAM's reads and IRQ3 come from
+MAME's capture (main.cpp's header). The board passes the end of MAME's capture at board frame
+~1,950. `sim/fdc_tb` replayed the FDC's accesses alone (32 reads equal); `sim/floppy_tb` on `bm3-fdc-nodisk` replaces it.
+
+| Streams | Entries | Result |
+|---|---|---|
+| FDC (MSR, reads, writes) | 52 | equal |
+| MIDI UART, both channels | 70 | equal |
+| extend board IRQ enable, active | 24 | equal |
+| dual-port RAM writes | 1,948 | equal (1,284 before IRQ3 was driven: the PPC repeated its first command) |
+| RTC, flash, PC16552D, the 403's serial port (dongle) | 17,909 | equal |
+| lamps (0x7D000804) | 58 | equal |
+| ATA data | 437,300 words | equal |
+| ATA writes | 93 | equal |
+| ATA register reads | 880 | differ: the first 40 differences (`+diffs=40`) are all the high byte alone, 0xFF where MAME has 0x00; the rest not listed |
+| GCU writes | | differ, as ppp's and kbm's (order and the engine's data, not drawn here) |
+
+The ATA high byte: the current `firebeat.exe` (`6d050b58`) returns 0x00 above every 8-bit
+register for ppp11 too (a fresh 1,600-frame capture), while `debug/ppp11-boot`, captured with an
+earlier build, has 0xFF, which `fb_atapi` gives (`{8'hFF, reg}`). Reading MAME's source
+(`ataintf.cpp` m_default_data 0xFFFF, `atahle.cpp` command_r writes data.b.l only) predicts 0xFF;
+the cause of 0x00 is not found. Left as `fb_atapi` has it: the ATA writes and data after these reads
+are equal, so the game's path does not change with it.
+
+**Area** (`Firebeat_bm3` at `0cdfa15`, seed 7): 37,325 of 41,910 ALMs (89%), 443 of 553 RAM blocks;
+`Firebeat_popn` at the same seed 36,259. `fb_fdc37c665` 83 ALMs, the MIDI channels 326 and 325.
+Setup fails on the 133 MHz memory clock by 0.208 ns (TNS -0.254), inside `firebeat_sdram`'s
+`sdram` (`state` to `SDRAM_A`); the other clocks meet.
+
+## bm3's HDD against MAME (Phase 10 step 4)
+
+**Capture.** `scripts/mame/popn_spu.lua` on bm3 -> `debug/bm3-spu` (gitignored): 382 ATA commands,
+the attract load ending at frame 2,762; `waveram.bin` at the end. Commands: NOP (aborted), SET
+FEATURES 03 count 22h (multi-word DMA 2; identify word 88 is 0, so UDMA would be refused), then
+READ SECTORS x76 and READ DMA x304, all LBA, 11 ranges, 48,012 sectors.
+
+**Bench.** `sim/hdd_tb` replays the 68000's ATA and DMA-register accesses at MAME's times on
+sector files cut from `gc97202` (`chdman extractraw`), and plays `spu_dma_callback`'s DMA (a word
+as DMARQ rises, then one every 350 ns). Result (`debug/bm3-spu/hdd_tb.log`):
+
+| Compared | Count | Differ |
+|---|---|---|
+| register reads (low byte) | 2,358 | 0 |
+| PIO data words | 232,448 | 0 |
+| DMA words against MAME's wave RAM | 12,058,624 | 0 |
+
+The status IDX bit follows MAME's rule: set on a status read when more than one rotation (11.111 ms,
+5,400 rpm) has passed since the last read that showed it.
+
+## bm3's video at 25.175 MHz (Phase 10 step 5)
+
+**Clock.** Decision B: `rtl/pll_vid.v`, a fractional PLL from the 50 MHz input, gives clk_vid at
+100.7 MHz for bm3 only (`FB_BM3`), and CLK_VIDEO is clk_vid there. `fb_gcu_disp` with VCLK runs the
+timing, the line buffer's reads, the scaling and the outputs on clk_vid with a pixel every fourth
+clock; the line build and its DDR3 reads stay on clk_sys. Firebeat.sdc makes clk_vid asynchronous to
+the core's PLL.
+
+**Mode.** bm3 writes no CRTC field (`scripts/mame_vram_window.py bm3 --frame 3200`: registers 0x00
+and 0x04 never written, 0x08's low half only, which `k057714.cpp` ignores), so device_reset's
+640 x 480 of 800 x 525 stands.
+
+**Bench.** `sim/disp_tb -GVCLK=1 +win=debug/bm3-vram3200`, clk at 66.667 MHz and clk_v at 100.7 MHz
+interleaved by time:
+
+| Case | Pixels | Differ | Frame |
+|---|---|---|---|
+| MAME's attract frame 3201 | 307,200 | 0 | 1,680,000 clk_v, 59.940 Hz, no late line |
+| `+flip=1` | 307,200 | 0 | the same |
+| `+lat=60 +busy=40` | 307,200 | 0 | the same |
+
+Without VCLK the module is unchanged: ppp11 (`ppp11-vram21400`, with and without flip) and kbm's
+three screen modes (`kbm-screens4000`) 0 differing, no late line.
+
+**Build** (`Firebeat_bm3`, seed 7). At `9842b4e` clk_vid failed setup by 6.877 ns, every path the
+channel scaling in one clock; from `2c80a7a` the scaling takes three clocks and the output a pixel
+later. At `2c80a7a`: timing met on every clock, clk_vid slack 0.268 ns (Fmax 103.51 MHz), clk_sys
+0.654, the memory clock 0.203; 36,207 ALMs (86%), 446 RAM blocks, 4 of 6 PLLs. The PLL gives
+100.708 MHz (VCO 50 x 4125 / 512 = 402.83 MHz, / 4; the fit report), so the frame is 59.945 Hz
+against MAME's 59.940.
+
+**On the board** (`Firebeat_bm3_30000001.rbf`, `2c80a7a` seed 7; `MiSTer_Firebeat` `firebeat-hdd`
+md5 `6e513d4a…`; `releases/Beatmania III.mra`, the discs from `config/bm3.s0`/`.s1`, no NVRAM
+file): native screenshots 640 x 480. The startup check at about 25 s
+(`docs/screenshots/phase10_bm3_startup.png`), the warning, then the attract mode's play demo at about
+95 s (`docs/screenshots/phase10_bm3_demo.png`). Direct video through a scaler: not yet checked.
+
+## bm3's effects in MAME (Phase 10 step 6a)
+
+`scripts/mame/bm3_st224.lua` (MAME bm3, `debug/bm3-play/ev_play3.txt`'s credit and song, pedals
+pressed and dials set from the script): chan1's MIDI bytes, RF5C400 registers 6 (main) and 7
+(effect send) of every channel. Runs `debug/bm3-st224` (pedals, one change per dial),
+`bm3-st224b` (dials 3 and 7 stepped up, dial 4 stepped), `bm3-st224c` (dials 3 and 7 stepped down).
+
+**MIDI.** At startup: `B0 79 00`, `B0 7B 00`, `B0 78 00` (reset controllers, notes off, sounds
+off), `A0 6C 7F` (SOURCE's effect enable on), `90 23 7F`, then the setting and `B0 50 00` (effect
+off). In a song the left pedal (MAME P1 Foot) selects setting A, the right (P2 Foot) setting B:
+`C0 pp`, `B0 0C p1`, `B0 0D p2`, `A0 6D lv`, `B0 50 7F`; the setting is resent every 30 frames and
+`B0 50 00` comes at the song's end. A dial change sends at once. Never sent: CC 14, 15, 81 (BPM,
+sync). Meaning from the ST-224 manual (manualsdir 231071, pp. 42-47, 73-75): PC the effect type,
+CC 12/13 EDIT 1/EDIT 2 at 0-100, CC 80 effect on/off, poly pressure on note 108 SOURCE's effect
+enable, note 109 SOURCE's level (0-99).
+
+**Programs**, the order the program dials step through (it stops at each end), with the defaults
+bm3 sends on selecting one (P1, P2, SOURCE level); names are the manual's for that number and
+match the cabinet's list (kani.no.coocan.jp effect page) in its alphabetical order:
+
+| PC | Effect | EDIT 1 / EDIT 2 (manual) | P1 | P2 | Level |
+|---|---|---|---|---|---|
+| 20 | AUTO PAN | rate / width | 15 | 70 | 70 |
+| 3 | CHORUS | rate / mix | 60 | 70 | 70 |
+| 1 | DELAY | time (max 505 ms) / feedback and mix | 50 | 50 | 60 |
+| 15 | DIMENSION | intensity / tone | 50 | 90 | 55 |
+| 5 | DISTORTION | gain / tone | 30 | 90 | 60 |
+| 21 | EXCITER | sens / frequency | 100 | 100 | 55 |
+| 7 | EXTREME EQ | band cut / band | 0 | 30 | 85 |
+| 2 | FLANGER | rate / feedback and mix | 5 | 20 | 70 |
+| 17 | HIGH-PASS | cutoff / resonance | 40 | 50 | 80 |
+| 8 | LO-FI | noise / tone | 70 | 90 | 70 |
+| 6 | LOW-PASS | cutoff / resonance | 80 | 60 | 85 |
+| 14 | PHASER | rate / resonance | 80 | 25 | 70 |
+| 4 | PITCH SHIFTER | pitch (one octave either way) / tone | 70 | 90 | 75 |
+| 18 | RESONANCE | sens / resonance | 50 | 60 | 80 |
+| 12 | REVERB | time / mix | 40 | 70 | 55 |
+| 16 | RING MOD | frequency / balance | 80 | 20 | 70 |
+| 13 | STEP CRY | rate / sens | 50 | 20 | 70 |
+| 9 | TREMOLO | rate and clip / depth | 20 | 60 | 70 |
+| 10 | VOLUME/BASS | volume / bass boost | 50 | 70 | 50 |
+
+Not sent: 0 TIME STRETCH, 11 SCRATCH, 19 COMPRESSOR. Power-on settings: A REVERB 40/70, B DELAY
+50/50.
+
+**Dials** (MAME EFFECT1-7, sensor halfwords 9-15, 5 bits, read as relative): 1 and 2 setting
+A's P1 and P2, 3 A's program, 4 the selector, 5 and 6 B's P1 and P2, 7 B's program. One step is
+one program; P1 and P2 steps are not yet characterised (a jump of 23 read as -9, one of 15 as +15).
+
+**Routing.** Every channel is on the main outputs or the sends, never both: bm3 swaps registers
+6 and 7 (the other holding E0E0, silent). With the effect on, the backing stream (channels 30
+and 31) moves to the sends (frame 20,101), and the key sounds started while it is on go there too
+until the selector is stepped (from frame 22,260 they start on the main outputs again).
+Consequence for step 6d: whatever arcsnd adds in latency lands between the backing and the keys.
+
+## bm3's floppy in MAME (Phase 10 step 9a)
+
+`scripts/mame/bm3_fdc.lua` (every access to 70001000-70001FFF, top byte lane) with a disk in
+`-flop`, credit and song as `debug/bm3-play/ev_st224.txt` without the pedals. Runs:
+`debug/bm3-fdc1` (a blank FAT12 image from `scripts/make_floppy.py`, to frame 30,000),
+`bm3-fdc2` (the image fdc1 left, to the mode select), `bm3-fdc3` (an all-zero image, same).
+
+**Registers.** The PC floppy block at 3F0-3F7 (offset >> 2). Configuration mode (55 55 to 3F0,
+index/data at 3F0/3F1, AA to leave), DOR 3F2 (1C: drive 0, motor 0, DMA gate, enabled), DSR 3F4,
+MSR 3F4, data 3F5, CCR 3F7 (0: 500 kbit/s) and DIR 3F7 (disk change, bit 7).
+
+**Commands.** CONFIGURE `13 00 1E 00`, SPECIFY `03 5F 11` (ND=1: no DMA), RECALIBRATE, SENSE
+INTERRUPT STATUS, SEEK, SENSE DRIVE STATUS `04 04`, READ DATA `C6` and WRITE DATA `C5`, both MT and
+MFM, always a whole cylinder: `.. 00 Cn 00 01 02 12 1B FF` (head 0 sector 1 to head 1 sector 18,
+36 sectors, 18,432 bytes). Before saving to a disk that already holds its file, READ DELETED DATA
+`CC 00 00 00 01 02 12 1B FF`: one 512-byte sector (the boot sector), result `00 00 40 00 00 01 02`
+(ST2 CM, a normal data mark), not seen with a blank disk (`debug/bm3-fdc-save`, the user's disk to
+its save at frame 35,632). Data moves by programmed I/O, the MSR at F0 (read) or B0 (write) for
+each byte. No READ ID, FORMAT TRACK, VERIFY or DUMPREG.
+
+**When.** At Start (frame 6,566) cylinder 0 is read; MAME's first read ends after 2,047 bytes and
+the game reads cylinder 0 again (6,718), in all three runs. With a disk that holds its files it
+goes on to cylinder 1 (6,751). At name entry ("FD WRITING...", 29,090-29,610): cylinders 0, 1 and
+2 written, each read back after. fdc1 wrote `BM31.DAT` (10,064 bytes) and `BASIC1P.TXT`
+(10,548), rewrote the boot sector (its own volume serial) and the FATs: 45 sectors changed.
+
+**What the game shows.** A FAT12 disk: an "FD PLAY" badge at the mode select. The disk fdc1 left:
+the same plus a "Record Box" notice on the BASIC mode, so the save is read back. The all-zero
+disk: no badge, no further reads; the game plays as without a disk. A user's image has to be
+FAT12-formatted.
+
+## bm3's effect sends (Phase 10 step 6b)
+
+`fb_rf5c400 #(.SENDS(1))` (bm3) adds outputs 2 and 3 from register 7 and mixes them at 0.5 with 0
+and 1, as `firebeat_bm3`; `main_*`/`send_*` carry the two halves for the bridge.
+
+Capture `debug/bm3-rf5c-fx/` (`popn_rf5c.lua`, `CORE_FROM=320.4`, the play inputs with the left
+pedal at frame 20,100; `-samplerate 44100 -wavwrite`, three channels, the third silent). Window
+320.5-338 s: every channel off before it, the song keyed at 320.857 s, effect on at 335.369 s.
+
+| Check | Result |
+|---|---|
+| `rf5c_ref.py --sends` against MAME's .wav, 0.25 s blocks at 1 s steps, each at its best offset | 0 differ in every block from 335.5 s (effect on); the blocks holding the backing stream's key-ons (321.5-325.5, 329.5, 333.5, 334.5 s) fit no single offset, MAME applying each write at its next stream update |
+| the same without `--sends` | 0 differ to 333.5 s at the same offsets, about 11,000 of 11,025 in each block after 335.5 s |
+| `rf5c_tb -GSENDS=1` against `--sends`, 771,750 samples | 0 differ |
+| `rf5c_tb` (SENDS 0) against the dry model, same window | 0 differ |
+
+## bm3's ST-224 bridge (Phase 10 step 6c)
+
+`fb_midibridge #(.ST224(1))` on bm3 (its header has the layout): chan1's bytes as for kbm, version
+2, every RF5C400 send frame into a 2,048-frame ring with its microsecond stamp, and the server's
+heartbeat read every 10 ms. `server_on` (the heartbeat changed within 5 beats) switches
+`firebeat_sys`'s audio from the RF5C400's full mix to its main half, at a frame's edge. With the
+OSD's UART mode at MIDI (a real unit on the port) the bridge's mute is set and the server is to
+stay silent, so the core keeps the sends.
+
+`sim/bridge_tb` (a modelled DDR3 port and server, 400 ms, the heartbeat from 100 to 250 ms):
+
+| Port stalls | Frames | Bytes | `server_on` up | down |
+|---|---|---|---|---|
+| 0 % | 17,593 of 17,637 read, 0 wrong (the rest sent in the last millisecond) | 313 of 313 | 1 beat after the first heartbeat | 6 beats after the last |
+| 30 % | the same | the same | 1 beat | 6 beats |
+| 90 % | the same | the same | 0 beats | 6 beats |
+
+Every edge at a frame's strobe. `sim/uart_tb` (kbm's bridge, the boot capture): 40 entries, 0 differ.
+
 ## Feasibility
 
 Open. Each item names what would close it. ppp11 measurements are in "Measured in MAME: ppp11" above; the other families are not measured.

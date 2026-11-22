@@ -29,6 +29,7 @@ MODULES = {
                                       rd="st_a[6] ? 32'(st_a[4] ? tq : rq) : 32'd0"),
     'rtl/board/fb_midi_kbd.sv':  dict(abits=6, skip=set()),
     'rtl/board/fb_gcu_shell.sv': dict(abits=6, skip=set()),
+    'rtl/spu/fb_atahdd.sv':      dict(abits=6, skip={'ring', 'br_q', 'rq', 'resp', 'bad'}),
     'rtl/board/fb_ppc_dma.sv':   dict(abits=8, skip={'sim_words', 'sim_dropped', 'sim_live', 'sim_gcu_wait', 'sim_src_wait'}),
 }
 

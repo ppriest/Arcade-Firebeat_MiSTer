@@ -11,7 +11,7 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
   - [ParaParaParadise](#paraparaparadise)
   - [Pop'n Music](#popn-music)
   - [Keyboardmania](#keyboardmania)
-  - [Not yet](#not-yet)
+  - [Beatmania III](#beatmania-iii)
 - [Screenshots](#screenshots)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
@@ -26,6 +26,13 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
 - [License](#license)
 
 ## History
+
+**20261122**
+* **Beta** Added: Beatmania III, Append Core Remix, 6th Mix, 7th Mix and The Final, `Arcade-Firebeat_bm3_*.rbf`
+  * Needs the new `MiSTer_Firebeat` (`releases/MiSTer_Firebeat_20261121.zip`) for the hard disk CHDs
+  * Floppy disk saves: `releases/Firebeat_blank_floppies.zip`
+  * Effects through the Arcade Sound Server
+* `MiSTer_Firebeat` updated: serves hard disk CHDs
 
 **20261114**
 * **Beta** Added: KeyboardMania/2nd/3rd `Arcade-Firebeat_kbm_*.rbf`
@@ -52,7 +59,7 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
 * A 128 MB SDRAM module is required (technically 64MB is enough for PPP, but Pop'n Music and Keyboardmania needs 128MB)
 
 * Raw `.bin` images (from `chdman extractcd`) should work with the standard Main.
-CHDs need `MiSTer_Firebeat`, a Main_MiSTer build with CHD support for Firebeat. Upload it as `MiSTer_Firebeat` in the root of the SDCard and add to `MiSTer.ini`:
+CHDs need `MiSTer_Firebeat`, a Main_MiSTer build with CHD support for Firebeat, from the latest `releases/MiSTer_Firebeat_*.zip` (Beatmania III's hard disk CHDs need 20261121 or later). Upload it as `MiSTer_Firebeat` in the root of the SDCard and add to `MiSTer.ini`:
 
 ```
 [Firebeat*]
@@ -60,6 +67,10 @@ main=MiSTer_Firebeat
 ```
 
 * Installing `releases/Firebeat_disc_slots.zip` will prevent you having to manually mount all of the CHDs/discs during boot. It should be unzipped in the root of the SDCard.
+
+* If choosing a disc in the OSD returns to the menu without mounting it, either the SDCard is read-only or the file is corrupt:
+  * Read-only: `touch /media/fat/test` fails. After filesystem errors Linux mounts the card read-only, and Main then fails to open any disc. Repair the card (`chkdsk /f` on a PC).
+  * Corrupt: the file's md5 on the MiSTer differs from your copy's. Copy it again.
 
 ## Games
 #### Cores and .mra's
@@ -294,6 +305,7 @@ OSD options:
 * **MIDI note offset** picks the 24 notes used (60, middle C, by default: on a 61-key
 keyboard, the 24 keys from the third C); 
 * **MIDI keyboard** - 'Split' gives player 2 the next two octaves. 
+* The keyboard's modulation wheel (CC 1) is player 1's jog wheel. Up and Down on the pad still push it to an end while held. A mod wheel stays where it is left, so turn it back to the middle to centre the jog wheel.
 * The game's music and key sounds go back out to the same port, so a keyboard with XG voices plays correctly. 
 * **Notes to** picks where they play: the
 MIDI port (the Arcade Sound Server stays silent), both, or the Arcade Sound Server only.
@@ -316,11 +328,90 @@ player_2_controller=3434_D030
 ```
 
 
-### Not yet
+### Beatmania III
 
-| Name | Why |
+Core: `Arcade-Firebeat_bm3_*.rbf`.
+
+#### 1. ROMs
+
+The MAME sets (`bm3.zip`, `bm3core.zip`, `bm36th.zip`, `bm37th.zip`, `bm3final.zip`) in
+`games/mame`. Each `.mra` also loads its RTC preset from the zip.
+
+#### 2. Discs
+
+Each set has a program CD and a hard disk, both CHDs with MAME's file names, in a folder named
+after the set under `games/`:
+
+| Game | Folder | Program CD | Hard disk |
+|-|-|-|-|
+| Beatmania III | `games/bm3/` | `gc97201.chd` | `gc97202.chd` (1.6 GB) |
+| Beatmania III Append Core Remix | `games/bm3core/` | `a05jca01.chd` | `a05jca02.chd` (2.8 GB) |
+| Beatmania III Append 6th Mix | `games/bm36th/` | `a21jca01.chd` | `a21jca02.chd` (3.3 GB) |
+| Beatmania III Append 7th Mix | `games/bm37th/` | `gcb07jca01.chd` | `gcb07jca02.chd` (3.8 GB) |
+| Beatmania III The Final | `games/bm3final/` | `gcc01jca01.chd` | `gcc01jca02.chd` (4.6 GB) |
+
+Mount both from the OSD after loading the game: **Program CD** the `...01` disc, **Hard disk** the
+`...02` image. The hard disk CHDs need `MiSTer_Firebeat` ([Requirements](#requirements)); a raw
+image from `chdman extracthd` works with the standard Main. Files over 4 GB need an exFAT card.
+
+#### 3. Controls
+
+| Input | Use |
 |-|-|
-| beatmania III and its updates | SPU board plus a hard disk and floppy |
+| Key 1-5 | the five keys |
+| Start | Start |
+| Pedal | the effect pedal: player 1's pedal picks effect setting A, player 2's setting B |
+| Effect | held: the d-pad steps the effect programs (Up/Down setting A's, Right/Left setting B's) and the deck stands still |
+| Coin, Test, Service | cabinet switches |
+| Pause | suspends the CPU |
+
+Each player's turntable comes from the stick, the d-pad or the mouse, chosen with the OSD's
+**P1 deck** and **P2 deck**:
+
+| Source | The turntable |
+|-|-|
+| Auto | the stick turns it with the stick's position; pushed fully, it keeps turning; the d-pad turns it |
+| Analog | the stick's position over its whole range; the d-pad turns it |
+| D-pad | the d-pad, or the stick pushed past half way, turns it |
+| Mouse | the mouse's left-right movement; the d-pad turns it |
+
+Keyboard: X is player 1's pedal; the cabinet's A and B buttons are 0 and Minus (MAME's keys),
+on the keyboard only; the seven effect dials step down and up on two keys each:
+
+| Dial | Effect | Down | Up |
+|-|-|-|-|
+| 1 | setting A, parameter 1 | T | Y |
+| 2 | setting A, parameter 2 | U | I |
+| 3 | setting A, program | H | J |
+| 4 | the selector (ELEMENT / TRACK) | K | L |
+| 5 | setting B, parameter 1 | N | M |
+| 6 | setting B, parameter 2 | , | . |
+| 7 | setting B, program | ; | ' |
+
+#### 4. Effects
+
+The cabinet's effects unit (a Zoom SampleTrak ST-224 on MIDI) is played by the Arcade Sound
+Server: its own versions of the 19 effects the game selects, applied to the sound the game sends
+to the unit. Without the server the core plays that sound without effects, as MAME does. The
+server's settings are under `[firebeat_bm3]` in `games/arcsnd/arcsnd.ini`.
+
+#### 5. Floppy disk
+
+The cabinet saved players' records to a floppy disk. Mount a raw 1.44 MB image in the OSD's
+**Floppy** slot; the game's saves are written back to that file as it makes them. The game needs a
+formatted (FAT12) disk and ignores a blank one. `releases/Firebeat_blank_floppies.zip`, unzipped
+in the root of the SD card, puts an empty formatted disk, `bm3_floppy.img`, in the games folder of
+each of bm3, bm3core, bm3final, bm36th and bm37th; mount that. `releases/bm3_floppy.img` is the
+same disk on its own (one copy per cabinet's records).
+`python scripts/make_floppy.py <file>` writes the same image. With nothing mounted the game runs as
+with an empty drive.
+
+Not yet tried on the board: the controller matches MAME in simulation (`sim/floppy_tb`).
+
+#### 6. Video output
+
+The Beatmania III core has no YC (composite / S-video) output, to free FPGA space for the floppy
+controller. HDMI and analog RGB are unchanged.
 
 ## Screenshots
 
@@ -392,6 +483,10 @@ The 20261114 release builds (fitted on that date); block counts and extents per 
 
 ![Firebeat_kbm floorplan](docs/floorplan/Firebeat_kbm.png)
 
+`Firebeat_bm3` (the 20261122 release, fitted on that date), `e57ef33`, seed 2 ([groups](docs/floorplan/Firebeat_bm3_groups.md)):
+
+![Firebeat_bm3 floorplan](docs/floorplan/Firebeat_bm3.png)
+
 ## Status
 
 Known issues:
@@ -452,6 +547,20 @@ DE10-nano's Cyclone V 5CSEBA6, speed grade 7, every clock positive (`clk_sys` +0
 | PLLs | 3 | 6 |
 
 87% of ALMs.
+
+`Firebeat_bm3` revision at `e57ef33` (the 20261122 release), fitter seed 2, every clock positive
+(`clk_sys` +1.872 ns, `clk_mem` +0.603 ns, HDMI +0.395 ns; hold +0.217 ns at worst):
+
+| resource | used | available |
+| --- | --- | --- |
+| Logic (ALMs) | 36,113 | 41,910 |
+| Registers | 37,101 | |
+| Block memory bits | 3,712,113 | 5,662,720 |
+| RAM blocks | 502 | 553 |
+| DSP blocks | 54 | 112 |
+| PLLs | 4 | 6 |
+
+86% of ALMs.
 
 ## AI Attestation
 

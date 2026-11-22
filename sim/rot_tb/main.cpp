@@ -3,6 +3,11 @@
 // fb_rot16 against MAME's screens (scripts/mame_kbm_screens.py), rotated here:
 //
 //   scripts/run_verilator.sh rot_tb +kbm=debug/kbm-screens4000 +mode=0|1|2 [+stall=N] [+ll] [+cw]
+//   scripts/run_verilator.sh rot_tb -GBANKS=2 -GCDC=1 +bm3=debug/bm3-vram3200 [+stall=N] [+cw]
+//
+// +bm3: MAME's 640 x 480 frame (screen_in.bin) at 800 x 525, the video on clk_v (100.7 MHz, a pixel
+// every fourth clock) through fb_pix_cdc to the rotator on clk (66.667 MHz), the edges interleaved
+// by time.
 //
 // +mode: the left screen, the right, or both stacked as fb_gcu_disp shows them, at its timing. The
 // framebuffer the rotator offers after the sixth frame must be the source rotated 90 degrees
@@ -22,21 +27,29 @@ double sc_time_stamp() { return 0; }
 
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
-    std::string kbm;
+    std::string kbm, bm3;
     int mode = 2, stall = 0;
     bool ll = false, cw = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "+cw") cw = true;
         if (a.rfind("+kbm=", 0) == 0) kbm = a.substr(5);
+        if (a.rfind("+bm3=", 0) == 0) bm3 = a.substr(5);
         if (a.rfind("+mode=", 0) == 0) mode = atoi(a.c_str() + 6);
         if (a.rfind("+stall=", 0) == 0) stall = atoi(a.c_str() + 7);
         if (a == "+ll") ll = true;
     }
-    const int W = 512, H1 = 384, HT = 687, VT1 = 416;
+    const bool B = !bm3.empty();
+    const int W = B ? 640 : 512, H1 = B ? 480 : 384, HT = B ? 800 : 687, VT1 = B ? 525 : 416;
+    if (B) mode = 0;
     int H = mode == 2 ? 2 * H1 : H1, VT = mode == 2 ? 2 * VT1 : VT1, div = mode == 2 ? 2 : 4;
     std::vector<uint32_t> src((size_t)W * H);
-    for (int k = 0; k < (mode == 2 ? 2 : 1); k++) {
+    if (B) {
+        FILE *fp = fopen((bm3 + "/screen_in.bin").c_str(), "rb");
+        if (!fp || fread(src.data(), 4, src.size(), fp) != src.size()) { fprintf(stderr, "cannot read %s/screen_in.bin\n", bm3.c_str()); return 1; }
+        fclose(fp);
+    }
+    for (int k = 0; k < (B ? 0 : mode == 2 ? 2 : 1); k++) {
         std::string f = kbm + "/screen_" + std::to_string(mode == 2 ? k : mode) + ".bin";
         FILE *fp = fopen(f.c_str(), "rb");
         if (!fp || fread(src.data() + (size_t)k * W * H1, 4, (size_t)W * H1, fp) != (size_t)W * H1) {
@@ -50,9 +63,13 @@ int main(int argc, char **argv) {
     std::vector<uint64_t> mem(3u << 20, 0);       // 8 MB x 3
     std::mt19937 rnd(1);
     t->enable = 1; t->cw = cw; t->reset = 1; t->FB_LL = ll; t->FB_VBL = 0; t->m_waitn = 1; t->ce_pix = 0; t->de = 0; t->vs = 0;
+    double tc = 0, tv = 0;
+    const double PC = 15.0, PV = 1000.0 / 100.7;
+    auto vtick = [&]() { t->clk_v = 0; t->eval(); t->clk_v = 1; t->eval(); tv += PV; };
     auto tick = [&]() {
         t->clk = 0; t->eval();
         t->clk = 1; t->eval();
+        tc += PC;
     };
     for (int i = 0; i < 8; i++) tick();
     t->reset = 0;
@@ -76,6 +93,25 @@ int main(int argc, char **argv) {
                 if (wait > 0 && b_left == 0) { t->m_waitn = 0; wait--; }
                 else t->m_waitn = 1;
             } else t->m_waitn = 1;
+            // CDC: this pixel clock's edge, after the rotator's edges due before it
+            while (t->cdc_on && tc <= tv) {
+                t->eval();
+                bool take = t->m_write && t->m_waitn;
+                uint32_t a = t->m_addr, lo = t->m_wdata, hi = t->m_wdata_hi;
+                const int burst = t->m_burst;
+                tick();
+                if (take) {
+                    if (b_left == 0) { b_base = a; b_left = burst / 2; b_k = 0; writes++; }
+                    uint32_t o = b_base + 8u * b_k - 0x24000000u;
+                    if ((b_base & 7) || (o >> 3) >= mem.size()) bad_addr++;
+                    else mem[o >> 3] = (uint64_t)hi << 32 | lo;
+                    b_k++;
+                    if (--b_left == 0) wait = stall ? rnd() % (stall + 1) : 0;
+                }
+                if (t->m_write) t->m_waitn = (wait > 0 && b_left == 0) ? (wait--, 0) : 1;
+                else t->m_waitn = 1;
+            }
+            if (t->cdc_on) { vtick(); continue; }
             t->eval();
             bool take = t->m_write && t->m_waitn;
             uint32_t a = t->m_addr, lo = t->m_wdata, hi = t->m_wdata_hi;

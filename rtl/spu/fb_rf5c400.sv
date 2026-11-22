@@ -4,8 +4,9 @@
 // The Ricoh RF5C400 as MAME models it (sound/rf5c400.cpp): 32 PCM channels at 44.1 kHz (16.9344
 // MHz / 384) from the wave RAM, MAME's envelopes, volume and pan tables (fb_rf5c400_tables.svh,
 // scripts/gen_rf5c400_tables.py, in fixed point where MAME uses doubles), its clean outputs at
-// the 0.5 firebeat_popn routes them with (firebeat.cpp); the effect sends (outputs 2 and 3, the
-// effect register) reach the speaker only on beatmania III and are left out.
+// the 0.5 firebeat_popn routes them with (firebeat.cpp). With SENDS (beatmania III) the effect
+// sends too, outputs 2 and 3 from the effect register (0x07), mixed in at 0.5 as firebeat_bm3
+// does; main_*/send_* are the two halves, each at 0.5, for the ST-224 bridge.
 //
 // Registers (the 68000's 400000-400FFF, word offset addr): below 0x400 the globals rf5c400_r/w
 // handle (status 0x00, channel control 0x01, the polled channel 0x08 and its position 0x09, the
@@ -21,7 +22,8 @@
 
 module fb_rf5c400 #(
     parameter int TICK_ADD = 1323,            // 44.1 kHz: 1323 in 2,000,000 clocks of 66.667 MHz
-    parameter int TICK_MOD = 2000000
+    parameter int TICK_MOD = 2000000,
+    parameter bit SENDS = 0
 ) (
     input  logic               clk,          // clk_sys, 66.667 MHz
     input  logic               reset,
@@ -41,6 +43,7 @@ module fb_rf5c400 #(
     input  logic [15:0]        m_rd,
 
     output logic signed [15:0] out_l, out_r,
+    output logic signed [15:0] main_l, main_r, send_l, send_r,
     output logic               sample        // a clock: out_l/out_r are the new sample
 );
 
@@ -123,11 +126,11 @@ end
 // ---------------------------------------------------------------- channel registers
 // written by the 68000, read by the engine at its channel (a clock late)
 (* ramstyle = "M10K" *) logic [15:0] r_starth [32], r_startl [32], r_endl [32], r_endh [32],
-                                     r_loopl [32], r_pan [32], r_vol [32],
+                                     r_loopl [32], r_pan [32], r_fx [32], r_vol [32],
                                      r_att [32], r_dec [32], r_rel [32];
 (* ramstyle = "M10K" *) logic [21:0] r_step [32];
 logic [4:0]  ech;
-logic [15:0] q_starth, q_startl, q_endl, q_endh, q_loopl, q_pan, q_vol, q_att, q_dec, q_rel;
+logic [15:0] q_starth, q_startl, q_endl, q_endh, q_loopl, q_pan, q_fx, q_vol, q_att, q_dec, q_rel;
 logic [21:0] q_step;
 
 wire c_cw = c_take && we && c_ch;
@@ -138,6 +141,7 @@ always_ff @(posedge clk) begin if (c_cw && c_reg == 5'h03) r_endl[c_chn]   <= wd
 always_ff @(posedge clk) begin if (c_cw && c_reg == 5'h04) r_endh[c_chn]   <= wd; q_endh   <= r_endh[ech];   end
 always_ff @(posedge clk) begin if (c_cw && c_reg == 5'h05) r_loopl[c_chn]  <= wd; q_loopl  <= r_loopl[ech];  end
 always_ff @(posedge clk) begin if (c_cw && c_reg == 5'h06) r_pan[c_chn]    <= wd; q_pan    <= r_pan[ech];    end
+always_ff @(posedge clk) begin if (c_cw && c_reg == 5'h07) r_fx[c_chn]     <= wd; q_fx     <= r_fx[ech];     end
 always_ff @(posedge clk) begin if (c_cw && c_reg == 5'h08) r_vol[c_chn]    <= wd; q_vol    <= r_vol[ech];    end
 always_ff @(posedge clk) begin if (c_cw && c_reg == 5'h09) r_att[c_chn]    <= wd; q_att    <= r_att[ech];    end
 always_ff @(posedge clk) begin if (c_cw && c_reg == 5'h0C) r_dec[c_chn]    <= wd; q_dec    <= r_dec[ech];    end
@@ -175,8 +179,8 @@ logic [15:0]        tmp;
 logic signed [15:0] smp, s2;
 logic signed [23:0] s3;
 logic signed [47:0] p3;                     // s2 * lvl, rounded in E_LVT
-logic signed [48:0] p_l, p_r;               // s3 * pan, rounded in E_ACC
-logic signed [23:0] acc_l, acc_r;
+logic signed [48:0] p_l, p_r, p_el, p_er;   // s3 * pan, s3 * effect, rounded in E_ACC
+logic signed [23:0] acc_l, acc_r, acc_el, acc_er;
 
 wire [23:0] st_start = {q_starth[15:8], q_startl};
 wire [23:0] st_end   = {q_endh[7:0], q_endl};
@@ -191,7 +195,7 @@ always_ff @(posedge clk) begin
     E_IDLE:
         if (tick_pend) begin
             tick_pend <= 1'b0;
-            ech <= 5'd0; acc_l <= '0; acc_r <= '0;
+            ech <= 5'd0; acc_l <= '0; acc_r <= '0; acc_el <= '0; acc_er <= '0;
             e <= E_RD;
         end
     E_RD: e <= E_CMD;                       // the RAMs at ech
@@ -265,14 +269,18 @@ always_ff @(posedge clk) begin
         s3 <= trunc_shr(64'(p3), 30);
         e <= E_PAN;
     end
-    E_PAN: begin                            // outputs 0 and 1, each toward zero
+    E_PAN: begin                            // outputs 0-3, each toward zero
         p_l <= s3 * $signed({1'b0, pan_t(q_pan[7:0])});
         p_r <= s3 * $signed({1'b0, pan_t(q_pan[15:8])});
+        p_el <= SENDS ? s3 * $signed({1'b0, pan_t(q_fx[7:0])}) : 49'sd0;    // a signed 0: '0 would make the product unsigned
+        p_er <= SENDS ? s3 * $signed({1'b0, pan_t(q_fx[15:8])}) : 49'sd0;
         e <= E_ACC;
     end
     E_ACC: begin
         acc_l <= acc_l + trunc_shr(64'(p_l), 24);
         acc_r <= acc_r + trunc_shr(64'(p_r), 24);
+        acc_el <= acc_el + trunc_shr(64'(p_el), 24);
+        acc_er <= acc_er + trunc_shr(64'(p_er), 24);
         e <= E_WB;
     end
     E_WB: begin
@@ -282,8 +290,15 @@ always_ff @(posedge clk) begin
         d = pos[39:16] - st_start;
         o_wd <= (ph == PH_NONE) ? 16'd0 : d[21:6];
         if (ech == 5'd31) begin
-            out_l <= sat16($signed(acc_l + {23'd0, acc_l[23]}) >>> 1);    // 0.5, toward zero as MAME's .wav
-            out_r <= sat16($signed(acc_r + {23'd0, acc_r[23]}) >>> 1);
+            logic signed [24:0] ml, mr;
+            ml = SENDS ? 25'(acc_l) + 25'(acc_el) : 25'(acc_l);
+            mr = SENDS ? 25'(acc_r) + 25'(acc_er) : 25'(acc_r);
+            out_l <= sat16(24'($signed(ml + {24'd0, ml[24]}) >>> 1));    // 0.5, toward zero as MAME's .wav
+            out_r <= sat16(24'($signed(mr + {24'd0, mr[24]}) >>> 1));
+            main_l <= sat16($signed(acc_l + {23'd0, acc_l[23]}) >>> 1);
+            main_r <= sat16($signed(acc_r + {23'd0, acc_r[23]}) >>> 1);
+            send_l <= sat16($signed(acc_el + {23'd0, acc_el[23]}) >>> 1);
+            send_r <= sat16($signed(acc_er + {23'd0, acc_er[23]}) >>> 1);
             sample <= 1'b1;
             e <= E_IDLE;
         end else begin
@@ -299,6 +314,7 @@ always_ff @(posedge clk) begin
 
     if (reset) begin
         e <= E_IDLE; tick_pend <= 1'b0; e_mreq <= 1'b0; out_l <= '0; out_r <= '0;
+        main_l <= '0; main_r <= '0; send_l <= '0; send_r <= '0;
         for (int k = 0; k < 32; k++) pend[k] <= 2'd1;
     end
 end

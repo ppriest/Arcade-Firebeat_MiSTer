@@ -85,9 +85,31 @@ def kbm(desc, year, dongle, cds, cabinet=2, zip=None, preset=None, english=False
     return s
 
 
+# Beatmania III on Firebeat_bm3 (ROADMAP Phase 10): popn's layout, its own BIOS and SPU program. The
+# buttons are Firebeat.sv's FB_BM3 J1 line.
+BM3_BUTTONS = "Key 1,Key 2,Key 3,Key 4,Key 5,Start,Pedal,Coin,Test,Service,Pause,Effect"
+
+def bm3(desc, year, dongle, rtc, cds, spu=("a21jca03.3q", "98ea367a")):
+    return dict(desc=desc, file=desc, bios=("972maina01.21e", "9de35bfd"), dongle=dongle, spu=spu,
+                rtc=("rtc", rtc), cds=cds, cabinet=0, year=year, rbf="Firebeat_bm3",
+                buttons=BM3_BUTTONS, hdd=True)
+
+
 POPN_PARENTS = {"popnmt": "Pop'n Music Mickey Tunes", "popnanm": "Pop'n Music Animelo",
                 "popnanm2": "Pop'n Music Animelo 2"}
 SETS = {
+    "bm3": dict(desc="Beatmania III", file="Beatmania III", bios=("972maina01.21e", "9de35bfd"),
+                dongle=("gq972", "b74dc63b"), spu=("972spua01.3q", "308dbcff"), rtc=("rtc", "20eff14e"),
+                cds=("gc97201", "gc97202"), cabinet=0, year=2000, rbf="Firebeat_bm3",
+                buttons=BM3_BUTTONS, hdd=True),
+    "bm3core": bm3("Beatmania III Append Core Remix", 2000, ("gca05-jc.bin", "a4c67c80"), "64bc48d3",
+                   ("a05jca01", "a05jca02"), spu=("972spua01.3q", "308dbcff")),
+    "bm36th": bm3("Beatmania III Append 6th Mix", 2001, ("gca21-jc", "5cf45b41"), "832ef42b",
+                  ("a21jca01", "a21jca02")),
+    "bm37th": bm3("Beatmania III Append 7th Mix", 2002, ("gcb07-jc", "18b32076"), "6383ed31",
+                  ("gcb07jca01", "gcb07jca02")),
+    "bm3final": bm3("Beatmania III The Final", 2002, ("gcc01-jc", "41209cf8"), "bf7079cd",
+                    ("gcc01jca01", "gcc01jca02")),
     "ppp11": dict(desc="ParaParaParadise v1.1", file="ParaParaParadise v1.1",
                   dongle=("gq977", "1cf40267"), cds=("gc977jaa01", "gc977jaa02")),
     "ppp": dict(desc="ParaParaParadise", file="ParaParaParadise",
@@ -180,11 +202,11 @@ def write(setname, s, romdirs, mamever):
         <interleave output="16">
             <part name="{s['spu'][0]}" crc="{s['spu'][1]}" map="12"/>
         </interleave>"""
-        discs = "the program CD, {} as the data DVD".format(s["cds"][1] + ".chd")
+        discs = "the program CD, {} as the {}".format(s["cds"][1] + ".chd", "hard disk" if s.get("hdd") else "data DVD")
         rtc_part = f"""
         <part repeat="{0x2000 - len(dongle):#x}">FF</part>
         <part name="{s['rtc'][0]}" crc="{s['rtc'][1]}"/>"""
-        buttons = POPN_BUTTONS
+        buttons = s.get("buttons", POPN_BUTTONS)
         cab = "06 rental (init_popn_rental)" if s["cabinet"] == 6 else "00 Japan (init_popn_jp)"
     else:
         layout = """the BIOS (ROM_LOAD16_WORD_SWAP), then the dongle at
@@ -211,14 +233,14 @@ def write(setname, s, romdirs, mamever):
         cab = "02 Japan (init_kbm_jp), 03 overseas (init_kbm_overseas); bit 4 the English instruction screens"
     # not on Pop'n Music: with the RAM tests skipped some builds stop at the game's E121 SDRAM ERROR,
     # and the same build passes the startup check without the patches (docs/HACKS.md)
-    patches = [] if popn else fast_boot(swap(bios))
+    patches = [] if popn and not s.get("hdd") else fast_boot(swap(bios))
     patch_part = "".join(f"""
         <patch offset="{o:#07x}">{' '.join(f'{b:02X}' for b in d)}</patch>""" for o, d in patches)
     if patches:
         patch_part = """
         <!-- fast boot (docs/HACKS.md): each work RAM test's bl as li r3,0, and the dead compare after
              it (beq +0) given the byte difference, so the BIOS's byte sum is unchanged -->""" + patch_part
-    rbf = "Firebeat_popn" if popn else "Firebeat_kbm" if s.get("kbm") else "Firebeat_ppp"
+    rbf = s["rbf"] if "rbf" in s else "Firebeat_popn" if popn else "Firebeat_kbm" if s.get("kbm") else "Firebeat_ppp"
     rotation = "vertical (ccw)" if s.get("kbm") else "horizontal"
     text = f"""<misterromdescription>
     <name>{name}</name>

@@ -3,9 +3,12 @@
 // fb_gcu_disp on hornet_ddr3, its registers and DDRAM port driven by main.cpp.
 
 module tb_disp #(
-    parameter bit KBM = 1'b0
+    parameter bit KBM = 1'b0,
+    parameter bit VCLK = 1'b0
 ) (
     input  logic             clk,
+    input  logic             clk_v,
+    output logic             vclk_on,
     input  logic             reset,
     input  logic             test,
     input  logic [1:0]       screen,
@@ -50,8 +53,9 @@ logic [31:0] d_addr, d_rdata, d_rdata_hi;
 logic [10:0] d_burst;
 logic [1:0]  waitn, rvalid;
 
-fb_gcu_disp #(.KBM(KBM)) u_disp (
-    .clk, .reset, .test, .screen, .flip, .b_crtc, .b_layer, .b_alpha, .b_x, .b_y, .b_w, .b_h, .b_base, .b_6c,
+assign vclk_on = VCLK;
+fb_gcu_disp #(.KBM(KBM), .VCLK(VCLK)) u_disp (
+    .clk, .clk_v, .reset, .test, .screen, .flip, .b_crtc, .b_layer, .b_alpha, .b_x, .b_y, .b_w, .b_h, .b_base, .b_6c,
     .crtc, .layer, .fr_alpha, .fr_x, .fr_y, .fr_w, .fr_h, .fr_base, .reg_6c,
     .m_read(d_read), .m_addr(d_addr), .m_burst(d_burst), .m_waitn(d_waitn), .m_rvalid(d_rvalid),
     .m_rdata(d_rdata), .m_rdata_hi(d_rdata_hi),

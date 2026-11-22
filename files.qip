@@ -3,6 +3,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/firebeat_sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/hornet_ddr3.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/fb_gcu_disp.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/fb_rot16.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/fb_pix_cdc.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/bringup/pattern_writer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/bringup/mem_check.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/issp_probe.sv
@@ -13,6 +14,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_ppc_mem.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_ppc_dma.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_pc16552.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_ns16550.sv
+set_global_assignment -name VERILOG_FILE rtl/board/ao486_floppy/simple_fifo.v
+set_global_assignment -name VERILOG_FILE rtl/board/ao486_floppy/floppy.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_floppy.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_midi_kbd.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_spu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_rtc65271.sv
@@ -20,7 +24,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_flash.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_ymz280b.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_gcu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_gcu_shell.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_gcu_wbyp.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_atapi.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_atapi_absent.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_cd_slot.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_ata.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_kbm_en.sv
@@ -31,13 +37,17 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68kAlu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/uaddrPla.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/spu/fb_spu68k.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/spu/fb_dvd_slot.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/spu/fb_atahdd.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/spu/fb_hdd_slot.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/spu/fb_rf5c400.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/fb_board.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/firebeat_sys.sv
 set_global_assignment -name SDC_FILE Firebeat.sdc
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mame_keys.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/kbm_keys.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/bm3_ctrl.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/kbm_usbmidi.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/kbm_midiout.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/psx_pad_snac.sv
+set_global_assignment -name VERILOG_FILE rtl/pll_vid.v
 set_global_assignment -name SYSTEMVERILOG_FILE Firebeat.sv

@@ -1,10 +1,11 @@
 #!/bin/bash
-# Build and run chd_raw_check.cpp in WSL against the Main_MiSTer worktree (branch firebeat-chd).
+# Build and run chd_raw_check.cpp in WSL against the Main_MiSTer worktree in $MAIN (default the
+# firebeat-chd one).
 #     MSYS_NO_PATHCONV=1 wsl -d Ubuntu -- bash /mnt/e/Arcade-Firebeat_MiSTer/scripts/main_mister/chd_raw_check.sh A.chd A.bin [B.chd B.bin ...]
 set -e
-MAIN=/mnt/e/Main_MiSTer-firebeat
+MAIN=${MAIN:-/mnt/e/Main_MiSTer-firebeat}
 HERE=$(cd "$(dirname "$0")" && pwd)
-OUT=$HOME/chdcheck
+OUT=$HOME/chdcheck/$(basename "$MAIN")
 mkdir -p "$OUT"
 INC="-I$MAIN -I$MAIN/lib/libchdr/include -I$MAIN/lib/lzma -I$MAIN/lib/zstd/lib -I$MAIN/lib/miniz"
 if [ ! -x "$OUT/chd_raw_check" ] || [ "$HERE/chd_raw_check.cpp" -nt "$OUT/chd_raw_check" ] || \

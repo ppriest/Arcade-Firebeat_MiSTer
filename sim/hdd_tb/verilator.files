@@ -1,0 +1,2 @@
+rtl/spu/fb_atahdd.sv
+sim/hdd_tb/tb_hdd.sv

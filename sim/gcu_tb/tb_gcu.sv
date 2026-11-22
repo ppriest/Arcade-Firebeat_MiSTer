@@ -5,7 +5,9 @@
 // running when scan is set; with stacked, Keyboardmania's stacked mode with this GCU's registers as
 // both screens' (the second reading the model's second VRAM), for its late lines.
 
-module tb_gcu (
+module tb_gcu #(
+    parameter bit BYP = 1'b0           // fb_gcu_shell BYP (-GBYP=1)
+) (
     input  logic         clk,
     input  logic         reset,         // the GCU's
     input  logic         por,           // hornet_ddr3's: power-up only
@@ -46,7 +48,7 @@ logic [1:0][3:0]  d_be, d_be_hi;
 logic [1:0][10:0] d_burst;
 logic [31:0]      d_rdata, d_rdata_hi;
 
-fb_gcu_shell u_gcu (
+fb_gcu_shell #(.BYP(BYP)) u_gcu (
     .clk, .reset, .skip, .req, .we, .addr, .be, .wdata, .ack, .rdata,
     .dg_we(1'b0), .dg_port(1'b0), .dg_data(32'd0), .dg_ready(),
     .vblank(1'b0), .busy0(1'b0), .busy1(1'b0), .irq(),
@@ -64,7 +66,7 @@ logic [3:0][15:0] fr_alpha, fr_x, fr_y, fr_w, fr_h;
 logic [3:0][31:0] fr_base;
 
 fb_gcu_disp #(.KBM(1'b1)) u_disp (
-    .clk, .reset(por || !scan), .test(1'b0), .flip(1'b0), .screen(stacked ? 2'd2 : 2'd0),
+    .clk, .clk_v(clk), .reset(por || !scan), .test(1'b0), .flip(1'b0), .screen(stacked ? 2'd2 : 2'd0),
     .b_crtc(crtc), .b_layer(layer), .b_alpha(fr_alpha), .b_x(fr_x), .b_y(fr_y), .b_w(fr_w), .b_h(fr_h),
     .b_base(fr_base), .b_6c(reg_6c),
     .crtc, .layer, .fr_alpha, .fr_x, .fr_y, .fr_w, .fr_h, .fr_base, .reg_6c,

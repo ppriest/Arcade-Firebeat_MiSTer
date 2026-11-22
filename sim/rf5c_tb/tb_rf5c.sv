@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // fb_rf5c400 with a sample every 700 clocks; main.cpp drives the 68000's side and the memory.
-module tb_rf5c (
+// -GSENDS=1: beatmania III's effect sends mixed in.
+module tb_rf5c #(parameter bit SENDS = 0) (
     input  logic        clk, reset, req, we,
     input  logic [10:0] addr,
     input  logic [15:0] wd,
@@ -11,8 +12,8 @@ module tb_rf5c (
     output logic [15:0] m_wd,
     input  logic        m_ack,
     input  logic [15:0] m_rd,
-    output logic signed [15:0] out_l, out_r,
+    output logic signed [15:0] out_l, out_r, main_l, main_r, send_l, send_r,
     output logic        sample
 );
-fb_rf5c400 #(.TICK_ADD(1), .TICK_MOD(700)) u (.*);
+fb_rf5c400 #(.TICK_ADD(1), .TICK_MOD(700), .SENDS(SENDS)) u (.*);
 endmodule

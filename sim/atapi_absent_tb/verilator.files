@@ -1,0 +1,4 @@
+rtl/board/fb_atapi.sv
+rtl/board/fb_atapi_absent.sv
+sim/atapi_absent_tb/tb_atapi_absent.sv
++incdir+rtl/board

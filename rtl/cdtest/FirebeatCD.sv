@@ -45,6 +45,7 @@ assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
 // Probe A: slot 0 (program CD), probe B: slot 1 (audio CD); each, from bit 0:
 //   requests[31:0] words[63:32] run_clocks[95:64] latency_sum[127:96] latency_max[159:128]
 //   checksum[191:160] image_blocks[223:192] have_image[224]
+//   sources: start_lba[31:0] (taken at clear), requests to stop after [47:32] (0: none)
 // Probe F, sources: [0] clear, [1] run slot 0, [2] run slot 1, [3] random positions.
 //   probe: frame counter [15:0], clk_sys MHz [23:16]
 
@@ -170,14 +171,23 @@ assign LED_USER    = act_cnt[26]  ? act_cnt[25:18]  > act_cnt[7:0]  : act_cnt[25
 
 ///////////////////////   CD PATH TEST   ///////////////////////////////
 
-wire [7:0] ctl;
+wire [7:0] ctl_j;                             // ISSP sources change on TCK, not clk_sys
+reg  [7:0] ctl_m, ctl;
 wire [31:0] r_req[2], r_words[2], r_run[2], r_lsum[2], r_lmax[2], r_sum[2], r_blocks[2];
 wire        r_have[2];
+wire [47:0] src_j[2];                         // probe A/B sources: limit[47:32] start_lba[31:0]
+reg  [47:0] src_m[2], src[2];
+always @(posedge clk_sys) begin
+	ctl_m <= ctl_j;    ctl <= ctl_m;
+	src_m[0] <= src_j[0];    src[0] <= src_m[0];
+	src_m[1] <= src_j[1];    src[1] <= src_m[1];
+end
 
 genvar gs;
 generate for (gs = 0; gs < 2; gs++) begin : g_slot
 	cd_reader reader (
 		.clk(clk_sys), .clear(ctl[0]), .run(ctl[1 + gs]), .rnd(ctl[3]),
+		.start_lba(src[gs][31:0]), .limit(src[gs][47:32]),
 		.mounted(img_mounted[gs]), .img_size(img_size),
 		.sd_lba(sd_lba[gs]), .sd_blk_cnt(sd_blk_cnt[gs]), .sd_rd(sd_rd[gs]), .sd_ack(sd_ack[gs]),
 		.sd_buff_wr(sd_buff_wr), .sd_buff_dout(sd_buff_dout),
@@ -193,20 +203,20 @@ always @(posedge clk_sys) begin
 	if (VSync & ~vs_d) frames <= frames + 16'd1;
 end
 
-issp_probe #(.INSTANCE_ID("A"), .PROBE_W(225), .SOURCE_W(1)) u_probe_a (
+issp_probe #(.INSTANCE_ID("A"), .PROBE_W(225), .SOURCE_W(48)) u_probe_a (
 	.clk(clk_sys),
 	.probe({r_have[0], r_blocks[0], r_sum[0], r_lmax[0], r_lsum[0], r_run[0], r_words[0], r_req[0]}),
-	.source()
+	.source(src_j[0])
 );
-issp_probe #(.INSTANCE_ID("B"), .PROBE_W(225), .SOURCE_W(1)) u_probe_b (
+issp_probe #(.INSTANCE_ID("B"), .PROBE_W(225), .SOURCE_W(48)) u_probe_b (
 	.clk(clk_sys),
 	.probe({r_have[1], r_blocks[1], r_sum[1], r_lmax[1], r_lsum[1], r_run[1], r_words[1], r_req[1]}),
-	.source()
+	.source(src_j[1])
 );
 issp_probe #(.INSTANCE_ID("F"), .PROBE_W(24), .SOURCE_W(8)) u_probe_f (
 	.clk(clk_sys),
 	.probe({8'd67, frames}),                  // clk_sys MHz, from rtl/pll (the first FirebeatCD builds ran at 20)
-	.source(ctl)
+	.source(ctl_j)
 );
 
 endmodule

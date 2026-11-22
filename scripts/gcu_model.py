@@ -29,7 +29,7 @@ import numpy as np
 
 VRAM_WORDS = 8_388_608              # 32 MB of 32-bit words (k057714.cpp:41)
 VRAM_PIXELS = 2 * VRAM_WORDS
-VRAM_SIZE_HALF = 0x800000           # draw_object's destination bound, in pixels (G:667)
+VRAM_SIZE_HALF = 0x1000000          # draw_object's destination bound, in pixels: 0x2000000 / 2 (k057714.h:45)
 FB_PITCH = 1024
 
 

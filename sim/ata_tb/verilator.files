@@ -1,4 +1,5 @@
 rtl/board/fb_atapi.sv
+rtl/board/fb_atapi_absent.sv
 rtl/board/fb_cd_slot.sv
 rtl/board/fb_ata.sv
 rtl/board/fb_kbm_en.sv

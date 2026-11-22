@@ -86,6 +86,7 @@ def main():
     ap.add_argument("--events", default="", help="frame:port:mask:len,... presses before the window")
     ap.add_argument("--item", type=int, default=-1, help="VRAM save-item index, if the search errs")
     ap.add_argument("--gcu", type=int, default=0, help="1: kbm's second GCU (0x7E800100); out dir -sub")
+    ap.add_argument("--flop", default="", help="a floppy image for -flop (bm3)")
     ap.add_argument("--timeout", type=int, default=3600)
     a = ap.parse_args()
 
@@ -105,6 +106,8 @@ def main():
            "-autoboot_script", str(REPO / "scripts" / "mame" / "run.lua"),
            "-rompath", rompath(), "-nvram_directory", str(out / "nvram"),
            "-cfg_directory", str(out / "cfg")]
+    if a.flop:
+        cmd += ["-flop", str(Path(a.flop).resolve())]
     p = subprocess.run(cmd, cwd=mame_dir, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        timeout=a.timeout, **NO_WINDOW)
     log = p.stdout.decode(errors="replace")

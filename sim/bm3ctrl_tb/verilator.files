@@ -1,0 +1,2 @@
+rtl/bm3_ctrl.sv
+sim/bm3ctrl_tb/tb_bm3ctrl.sv

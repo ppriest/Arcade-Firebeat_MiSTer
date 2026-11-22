@@ -3,6 +3,7 @@ rtl/mister/firebeat_sdram.sv
 rtl/mister/hornet_ddr3.sv
 rtl/video/fb_gcu_disp.sv
 rtl/video/fb_rot16.sv
+rtl/video/fb_pix_cdc.sv
 rtl/bringup/pattern_writer.sv
 rtl/bringup/mem_check.sv
 rtl/cpu/ppc403/sharc2_lutram.sv
@@ -17,7 +18,9 @@ rtl/board/fb_flash.sv
 rtl/board/fb_ymz280b.sv
 rtl/board/fb_gcu.sv
 rtl/board/fb_gcu_shell.sv
+rtl/board/fb_gcu_wbyp.sv
 rtl/board/fb_atapi.sv
+rtl/board/fb_atapi_absent.sv
 rtl/board/fb_cd_slot.sv
 rtl/board/fb_ata.sv
 rtl/board/fb_kbm_en.sv
@@ -28,6 +31,8 @@ rtl/cpu/fx68k/fx68kAlu.sv
 rtl/cpu/fx68k/uaddrPla.sv
 rtl/spu/fb_spu68k.sv
 rtl/spu/fb_dvd_slot.sv
+rtl/spu/fb_atahdd.sv
+rtl/spu/fb_hdd_slot.sv
 rtl/spu/fb_rf5c400.sv
 +incdir+rtl/spu
 rtl/firebeat_sys.sv

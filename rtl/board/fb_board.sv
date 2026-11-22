@@ -8,13 +8,16 @@
 // one at a time, the DMA first. Physical addresses (31 bits):
 //   0x00000000-0x01FFFFFF  work RAM          SDRAM word port
 //   0x40000000-0x4000000F  the 403's serial port and the DS1991 (fb_spu), bytes
-//   0x70000000-0x70000FFF  KBM: the MIDI PC16552D (two fb_ns16550), byte lane 0, register = bits 11:8
+//   0x70000000-0x70000FFF  KBM, BM3: the MIDI PC16552D (two fb_ns16550), byte lane 0, register = bits 11:8
+//   0x70001000-0x70001FFF  BM3: the FDC37C665GT (fb_floppy), byte lane 0, port = bits 11:2 (0x3F0-0x3F7)
 //   0x70006000             extend board IRQ enable (write), 0x7000A000 its active bits (read, inverted)
-//   0x70008000-0x7000800F  KBM: the keyboards' modulation wheels, bytes 0 (P1) and 8 (P2)
+//   0x70008000-0x7000800F  KBM: the keyboards' modulation wheels, bytes 0 (P1) and 8 (P2); BM3's
+//                          spectrum analyser (0x70008000-7F) reads 0 (decision F, HACKS)
 //   0x74000000-0x740003FF  the SPU's dual-port RAM (POPN: dp_*), bytes; absent on ppp: reads 0
 //   0x7D000200-0x7D00021F  cabinet: offset 0 cabinet_info << 28, else 0
 //   0x7D000320-0x7D000327  lamps (dropped); 0x7D000804 lamps
-//   0x7D000340-0x7D00035F  sensors, halfwords 0-3: SENSORn | 0x0100, else 0 (ppp only)
+//   0x7D000340-0x7D00035F  sensors, halfwords 0-3: SENSORn | 0x0100, else 0 (ppp); BM3: halfword
+//                          k bm3_sens[k] | 0x0100, 4 reads 0 (firebeat_bm3_state::sensor_r)
 //   0x7D000400-0x7D000401  YMZ280B (fb_ymz280b), bytes (not POPN)
 //   0x7D000500-0x7D000501  control_w, bytes
 //   0x7D000800-0x7D000803  IN0-IN3, bytes
@@ -40,13 +43,19 @@
 // channel's receive line (fb_midi_kbd; chan1 the left, chan0 the right), chan1's transmit line
 // out as midi_txd (the XT446's input), the wheels; the sensors out.
 //
+// BM3: Beatmania III (firebeat_bm3_map), the POPN board with parts of the extend board: the MIDI
+// UART with nothing on its receive lines (chan1 drives the ST-224 effector, not emulated by MAME),
+// only chan1's interrupt on IRQ1 (bit 0); the FDC with an empty drive on IRQ1 (bit 2); bm3's
+// sensors. 0x7D000330-33F writes dropped (MAME's nopw).
+//
 // mon_*: each bus access to the ranges MAME's capture taps (0x40000000-0x4000000F,
 // 0x70000000-0x7FF7FFFF), at its end, as the taps see it (one per CPU or DMA access, the mask from
 // the byte enables, the data read or written) -- sim/board_tb compares them with io.txt.
 
 module fb_board #(
     parameter bit POPN = 1'b0,
-    parameter bit KBM  = 1'b0
+    parameter bit KBM  = 1'b0,
+    parameter bit BM3  = 1'b0            // with POPN
 ) (
     input  logic         clk,
     input  logic         reset,
@@ -112,10 +121,20 @@ module fb_board #(
     input  logic [1:0]   sd_ack,
     input  logic         sd_buff_wr,
     input  logic [15:0]  sd_buff_dout,
+    // BM3: the floppy drive, hps_io image slot 2 (the only one written)
+    input  logic         fd_mounted,
+    input  logic         fd_readonly,
+    output logic [31:0]  fd_lba,
+    output logic         fd_rd,
+    output logic         fd_wr,
+    input  logic         fd_ack,
+    input  logic [8:0]   sd_buff_addr,
+    output logic [15:0]  fd_buff_din,
 
     input  logic         vblank,
     input  logic [7:0]   in0, in1, in2, in3,
     input  logic [15:0]  sensor [4],
+    input  logic [15:0]  bm3_sens [16],   // BM3: IO1-4, -, turntables P1 hi, lo, P2 hi, lo, effects 1-7
     input  logic [3:0]   cabinet_info,
     input  logic         kbm_en,          // Keyboardmania's English instruction screens (fb_kbm_en)
     input  logic [1:0]   gcu_skip,        // KBM: a GCU whose screen is not shown draws nothing (fb_gcu skip)
@@ -216,7 +235,7 @@ logic [4:0]  ext_irq, ext_rise;
 logic [8:0]  int_irq;
 logic [3:0]  dma_irq;
 logic        spu_irq_rx, spu_irq_tx, gcu_irq;
-logic        dma_bad, spu_bad, flash_bad;
+logic        dma_bad, spu_bad, flash_bad, fdc_bad;
 
 wire dma_wait = dma_busy && (dma_hold || ((dcr_we_c || dcr_re_c) && dma_hit));
 // halt runs a paused CPU on to the next instruction start and holds it there; the timebase stops
@@ -233,10 +252,11 @@ assign frozen = halted && dc_flushed && !dma_busy && gcu_idle && gcu2_idle;
 // drives, 0x0200 the SPU, 0x0280 the RTC's counters, 0x0300 the flash, 0x0340 the PC16552D,
 // 0x0380 the GCU shell, 0x0400 the DMA, 0x0500 the DCR store, 0x0600 the YMZ280B's registers (read
 // only), 0x0700 and 0x0780 the MIDI UART's channels, 0x0800 and 0x0840 the keyboards, 0x0880 the
-// second GCU shell (KBM), 0x08C0 the control register and the extend board's IRQ state,
+// second GCU shell (KBM), 0x08C0 the control register and the extend board's IRQ state, 0x08E0
+// the FDC (BM3),
 // 0x2000 the RTC's NVRAM image a byte a word (its .nv format, 4,152 bytes)
 logic [31:0] st_ata_log;
-logic [31:0] st_ata, st_spu, st_rtc, st_fl, st_uart, st_gcu, st_dma, st_mu0, st_mu1, st_kb0, st_kb1, st_gcu2;
+logic [31:0] st_ata, st_spu, st_rtc, st_fl, st_uart, st_gcu, st_dma, st_mu0, st_mu1, st_kb0, st_kb1, st_gcu2, st_fdc;
 logic [7:0]  st_ymz;
 wire  st_hold = halted || st_we;        // the RAMs' read ports follow st_a
 wire  st_rtcnv = st_a[13];
@@ -258,6 +278,7 @@ always_ff @(posedge clk)
     14'b00_1000_01??_????: st_d <= st_kb1;
     14'b00_1000_10??_????: st_d <= st_gcu2;
     14'b00_1000_1100_0000: st_d <= {control, 7'd0, xirq1, xirq_act, xirq_en};
+    14'b00_1000_111?_????: st_d <= st_fdc;
     14'b01_????_????_????: st_d <= st_ata_log;       // the slave's access log, then its count at 0x1800
     14'b1?_????_????_????: st_d <= {24'd0, rtc_nv_rdata};
     default:               st_d <= 32'd0;
@@ -297,8 +318,8 @@ ppc403_core #(.PVR(32'h0020_1400)) u_cpu (
 );
 // an instruction starts only in a clock the CPU is enabled (the core's dbg_exec is not gated)
 assign dbg_exec = dbg_exec_c && ce_cpu;
-assign ext_irq = {ata_irq, POPN && dp_irq, 1'b0, KBM && xirq1, gcu_irq} | irq_force;
-assign ext_rise = {3'b000, KBM && xirq1_rise, 1'b0};
+assign ext_irq = {ata_irq, POPN && dp_irq, 1'b0, (KBM || BM3) && xirq1, gcu_irq} | irq_force;
+assign ext_rise = {3'b000, (KBM || BM3) && xirq1_rise, 1'b0};
 // the core's line_bits: [2] SPU receive (EXISR bit 4, MAME's PPC4XX_IRQ_BIT_SPUR), [1] SPU transmit,
 // [8:5] DMA channels 0-3 high to low (PPC4XX_IRQ_BIT_DMA0 is bit 8)
 assign int_irq = {dma_irq[0], dma_irq[1], dma_irq[2], dma_irq[3], 2'b00, spu_irq_rx, spu_irq_tx, 1'b0};
@@ -344,20 +365,21 @@ fb_ppc_dma u_dma (
 // ---------------------------------------------------------------- the bus
 typedef enum logic [4:0] {
     D_RAM, D_BIOS, D_SPU, D_XIRQW, D_XIRQR, D_CAB, D_SENS, D_YMZ, D_CTRL, D_IN, D_FLASH, D_RTC,
-    D_XRAM, D_GCU, D_GCU2, D_ATA0, D_ATA1, D_UART, D_DPR, D_MIDI, D_WHEEL, D_NONE
+    D_XRAM, D_GCU, D_GCU2, D_ATA0, D_ATA1, D_UART, D_DPR, D_MIDI, D_WHEEL, D_FDC, D_NONE
 } dev_t;
 
 function automatic dev_t decode(input logic [30:0] a);
     if (a[30:25] == 6'd0) return D_RAM;
     if (a[30:19] == 12'hFFF) return D_BIOS;
     if (a[30:4] == 27'h400_0000) return D_SPU;
-    if (KBM && a[30:12] == 19'h7_0000) return D_MIDI;           // 0x70000000-FFF
+    if ((KBM || BM3) && a[30:12] == 19'h7_0000) return D_MIDI;  // 0x70000000-FFF
+    if (BM3 && a[30:12] == 19'h7_0001) return D_FDC;            // 0x70001000-1FFF
     if (KBM && a[30:4] == 27'h700_0800) return D_WHEEL;        // 0x70008000-00F
     if (a[30:2] == 29'h1C00_1800) return D_XIRQW;              // 0x70006000
     if (a[30:2] == 29'h1C00_2800) return D_XIRQR;              // 0x7000A000
     if (a[30:5] == 26'h3E8_0010) return D_CAB;                 // 0x7D000200-21F
     if (POPN && a[30:10] == 21'h1D_0000) return D_DPR;         // 0x74000000-3FF
-    if (!POPN && !KBM && a[30:5] == 26'h3E8_001A) return D_SENS; // 0x7D000340-35F
+    if (((!POPN && !KBM) || BM3) && a[30:5] == 26'h3E8_001A) return D_SENS; // 0x7D000340-35F
     if (!POPN && a[30:1] == 30'h3E80_0200) return D_YMZ;       // 0x7D000400-401
     if (a[30:1] == 30'h3E80_0280) return D_CTRL;               // 0x7D000500-501
     if (a[30:2] == 29'h1F40_0200) return D_IN;                 // 0x7D000800-803
@@ -390,14 +412,14 @@ assign b_rdata = r_rdata;
 // byte and halfword devices: the lane in hand
 wire        byte_dev = r_dev == D_SPU || r_dev == D_YMZ || r_dev == D_CTRL || r_dev == D_IN ||
                        r_dev == D_FLASH || r_dev == D_RTC || r_dev == D_XRAM || r_dev == D_XIRQW || r_dev == D_XIRQR ||
-                       r_dev == D_UART || r_dev == D_DPR || r_dev == D_MIDI || r_dev == D_WHEEL;
+                       r_dev == D_UART || r_dev == D_DPR || r_dev == D_MIDI || r_dev == D_WHEEL || r_dev == D_FDC;
 wire [30:0] l_addr = {r_addr[30:2], r_lane};
 wire [7:0]  l_wd = r_wdata[31 - 8*r_lane -: 8];
 
 // device strobes for the lane in hand (one clock, B_LANE) and their answers
 logic       ln_go;                       // B_LANE's first clock
 logic       spu_req, rtc_req, ymz_req, fl_req, gcu_req, uart_req;
-logic [7:0] spu_q, rtc_q, ymz_q, fl_q, uart_q;
+logic [7:0] spu_q, rtc_q, ymz_q, fl_q, uart_q, fdc_q;
 logic       ymz_ack, fl_ack, gcu_ack, ata_req, ata_ack, ata_irq, ata_bad;
 logic [15:0] ata_q;
 logic [31:0] gcu_q, gcu2_q;
@@ -405,17 +427,24 @@ logic        gcu2_ack, gcu2_drop;
 
 // the extend board and the small registers
 logic [7:0] xirq_en, xirq_act;
-logic       xirq1;                      // KBM: IRQ1, as the last UART interrupt update left it
+logic       xirq1;                      // KBM, BM3: IRQ1, as the last interrupt update left it
+logic       fdc_irq;                    // BM3: the FDC's interrupt, a clock's pulse
 logic       xirq1_rise;                 // an update raised it from low, even for its own duration only
 logic [1:0] mu_upd, mu_hi, mu_q;        // the MIDI channels' interrupt updates (fb_ns16550)
 logic [7:0] midi_q;
 
+// a CPU access to a GCU waits for a running DMA transfer to end, MAME's order (its transfer runs
+// inside the DMACR write). bm3 writes port 0's address (0x60) and mode (0x68) before each 128-word
+// row of the display list it rewrites every frame (gcu_regtap.lua); one written while the last
+// row's transfer still ran would send that row's remaining words to the new address. Held here in
+// B_IDLE, not in the shell: the DMA's own GCU path needs the bus idle.
+wire u_gcu_wait = dma_busy && (decode(u_addr) == D_GCU || decode(u_addr) == D_GCU2);
 always_ff @(posedge clk) begin
     mon_v <= 1'b0;
     ln_go <= 1'b0;
     case (bs)
     B_IDLE:
-        if (b_req || u_req) begin
+        if (b_req || (u_req && !u_gcu_wait)) begin
             bm <= b_req;
             r_we <= b_req ? b_we : u_we;
             r_addr <= b_req ? b_addr : u_addr;
@@ -432,8 +461,12 @@ always_ff @(posedge clk) begin
         D_CAB: begin r_rdata <= (r_addr[4:2] == 3'd0) ? {cabinet_info, 28'h0} : 32'h0; bs <= B_DONE; end
         D_SENS: begin
             // halfwords: offset = (address - 0x7D000340) / 2
-            r_rdata <= {(r_addr[4:3] == 2'd0) ? sensor[{r_addr[2], 1'b0}] | 16'h0100 : 16'h0,
-                        (r_addr[4:3] == 2'd0) ? sensor[{r_addr[2], 1'b1}] | 16'h0100 : 16'h0};
+            if (BM3)
+                r_rdata <= {(r_addr[4:2] == 3'd2) ? 16'h0 : bm3_sens[{r_addr[4:2], 1'b0}] | 16'h0100,
+                            bm3_sens[{r_addr[4:2], 1'b1}] | 16'h0100};
+            else
+                r_rdata <= {(r_addr[4:3] == 2'd0) ? sensor[{r_addr[2], 1'b0}] | 16'h0100 : 16'h0,
+                            (r_addr[4:3] == 2'd0) ? sensor[{r_addr[2], 1'b1}] | 16'h0100 : 16'h0};
             bs <= B_DONE;
         end
         D_GCU, D_GCU2: bs <= B_WAIT;
@@ -458,6 +491,7 @@ always_ff @(posedge clk) begin
         D_SPU: if (!ln_go) begin done = 1'b1; q = spu_q; end
         D_UART: if (!ln_go) begin done = 1'b1; q = uart_q; end
         D_MIDI: if (r_lane != 2'd0 || !ln_go) begin done = 1'b1; q = (r_lane == 2'd0) ? midi_q : 8'h00; end
+        D_FDC: if (r_lane != 2'd0 || !ln_go) begin done = 1'b1; q = (r_lane == 2'd0 && l_addr[11:5] == 7'h7E) ? fdc_q : 8'h00; end
         D_WHEEL: begin
             done = 1'b1;
             q = (l_addr[3:0] == 4'd0) ? wheel[0] : (l_addr[3:0] == 4'd8) ? wheel[1] : 8'h00;
@@ -528,19 +562,22 @@ always_ff @(posedge clk) begin
     // KBM: each channel's interrupt callback, as firebeat_kbm_state::midi_keyboard_*_irq_callback
     // (firebeat.cpp:1903-1925): chan1 the left keyboard (enable and active bit 0), chan0 the right
     // (bit 1); an update sets the active bit and IRQ1 when its bit is enabled (0) and the line was
-    // high, else it clears IRQ1
+    // high, else it clears IRQ1. BM3: chan1 alone, as midi_st224_irq_callback (bit 0); the FDC's
+    // interrupt sets active bit 2 and IRQ1 when bit 2 is enabled and never clears IRQ1
+    // (floppy_irq_callback, firebeat.cpp:1405-1412)
     xirq1_rise <= 1'b0;
-    if (KBM) begin
+    if (KBM || BM3) begin
         logic l, r;
         // extend_board_irq_w clears IRQ1 when the enable's FDD bit (2) changes
         l = xirq1 && !(bs == B_LANE && r_dev == D_XIRQW && r_we && l_wd[2] != xirq_en[2]); r = 1'b0;
         for (int c = 0; c < 2; c++)
-            if (mu_upd[c]) begin
+            if (mu_upd[c] && !(BM3 && c == 0)) begin
                 logic b;
                 b = !xirq_en[c == 0 ? 1 : 0];
                 if (b && mu_hi[c]) begin xirq_act[c == 0 ? 1 : 0] <= 1'b1; if (!l) r = 1'b1; end
                 l = b && mu_q[c];
             end
+        if (BM3 && fdc_irq && !xirq_en[2]) begin xirq_act[2] <= 1'b1; if (!l) r = 1'b1; l = 1'b1; end
         xirq1 <= l; xirq1_rise <= r;
     end
     if (reset) begin
@@ -563,6 +600,7 @@ wire   gcu2_req = bs == B_WAIT && r_dev == D_GCU2 && !gcu2_ack;
 
 assign ata_req = bs == B_LANE && (r_dev == D_ATA0 || r_dev == D_ATA1) && !ata_ack;
 assign uart_req = lane_go && r_dev == D_UART;
+wire   fdc_req = lane_go && r_dev == D_FDC && r_lane == 2'd0 && l_addr[11:5] == 7'h7E;   // 0x3F0-0x3F7
 wire   midi_req = lane_go && r_dev == D_MIDI && r_lane == 2'd0;
 assign dp_cs   = lane_go && r_dev == D_DPR;
 assign dp_we   = r_we;
@@ -600,7 +638,7 @@ fb_pc16552 u_uart (
 
 // KBM: the MIDI PC16552D on the extend board, its channels at 24 MHz (9 clocks in 25), and the
 // keyboards on their receive lines
-generate if (KBM) begin : g_kbm
+generate if (KBM || BM3) begin : g_kbm
 logic [4:0] c24;
 logic       ce24;
 always_ff @(posedge clk) begin
@@ -629,13 +667,32 @@ assign midi_q = q[l11];
 assign midi_txd = txd[1];
 assign midi_tx_v = tx_v[1];
 assign midi_tx_byte = tx_b[1];
+if (KBM) begin : g_kbd
 fb_midi_kbd u_kbd_l (.clk, .reset, .hold(st_hold), .keys(kbd[0]), .txd(rxd[1]),
     .st_a(st_a[5:0]), .st_d(st_kb0), .st_we(st_we && st_a[13:6] == 8'h20), .st_wd);
 fb_midi_kbd u_kbd_r (.clk, .reset, .hold(st_hold), .keys(kbd[1]), .txd(rxd[0]),
     .st_a(st_a[5:0]), .st_d(st_kb1), .st_we(st_we && st_a[13:6] == 8'h21), .st_wd);
+end else begin : g_no_kbd             // BM3: the receive lines idle
+assign rxd = 2'b11;
+assign {st_kb0, st_kb1} = '0;
+end
 end else begin : g_no_kbm
 assign {mu_upd, mu_hi, mu_q, midi_q, midi_tx_v, midi_tx_byte, st_mu0, st_mu1, st_kb0, st_kb1} = '0;
 assign midi_txd = 1'b1;
+end endgenerate
+
+// the floppy controller has no state port (STATE.md)
+assign {fdc_bad, st_fdc} = '0;
+generate if (BM3) begin : g_fdc
+fb_floppy u_fdc (
+    .clk, .reset, .req(fdc_req), .we(r_we), .port(l_addr[4:2]), .wdata(l_wd), .rdata(fdc_q),
+    .irq(fdc_irq),
+    .img_mounted(fd_mounted), .img_readonly(fd_readonly), .img_size,
+    .sd_lba(fd_lba), .sd_rd(fd_rd), .sd_wr(fd_wr), .sd_ack(fd_ack),
+    .sd_buff_addr, .sd_buff_dout, .sd_buff_wr, .sd_buff_din(fd_buff_din)
+);
+end else begin : g_no_fdc
+assign {fdc_q, fdc_irq, fd_lba, fd_rd, fd_wr, fd_buff_din} = '0;
 end endgenerate
 
 fb_spu u_spu (
@@ -691,7 +748,9 @@ logic [1:0]   e_push, e_ready, e_idle, e_rw_req, e_rw_ack;
 logic [1:0][129:0] e_push_d;
 logic [1:0][22:0]  e_rw_addr;
 logic [31:0]  e_rw_data;
-fb_gcu_shell #(.ENG(!KBM)) u_gcu (
+logic         s_busy, s_mwait, s_full, s_frhold, s_cmdw, s_dmacmd;   // the probes: the single GCU's own engine (not kbm)
+logic [5:0]   s_depth;
+fb_gcu_shell #(.ENG(!KBM), .BYP(BM3)) u_gcu (
     .clk, .reset, .skip(1'b0),
     .req(gcu_req), .we(r_we), .addr({r_addr[7:2], 2'b00}), .be(r_be), .wdata(r_wdata),
     .ack(gcu_ack), .rdata(gcu_q),
@@ -704,6 +763,7 @@ fb_gcu_shell #(.ENG(!KBM)) u_gcu (
     .m_rvalid(vm_rvalid), .m_rdata(vm_rdata), .m_rdata_hi(vm_rdata_hi), .gcu_idle,
     .e_push(e_push[0]), .e_push_d(e_push_d[0]), .e_ready(e_ready[0]), .e_idle_in(e_idle[0]),
     .e_rw_req(e_rw_req[0]), .e_rw_addr(e_rw_addr[0]), .e_rw_ack(e_rw_ack[0]), .e_rw_data, .p_hold(perf[5]),
+    .p_busy(s_busy), .p_mwait(s_mwait), .p_full(s_full), .p_depth(s_depth), .p_frhold(s_frhold), .p_cmdw(s_cmdw), .p_dmacmd(s_dmacmd),
     .crtc(gd_crtc), .ctrl_lo(gd_layer), .fr_alpha(gd_alpha), .fr_x(gd_x), .fr_y(gd_y), .fr_w(gd_w),
     .fr_h(gd_h), .fr_base(gd_base), .reg_6c(gd_6c),
     .st_a(st_a[5:0]), .st_d(st_gcu), .st_we(st_we && st_a[13:6] == 8'h0E), .st_wd
@@ -725,6 +785,7 @@ fb_gcu_shell #(.ENG(1'b0)) u_gcu2 (
     .m_waitn(1'b0), .m_rvalid(1'b0), .m_rdata(32'd0), .m_rdata_hi(32'd0), .gcu_idle(gcu2_idle),
     .e_push(e_push[1]), .e_push_d(e_push_d[1]), .e_ready(e_ready[1]), .e_idle_in(e_idle[1]),
     .e_rw_req(e_rw_req[1]), .e_rw_addr(e_rw_addr[1]), .e_rw_ack(e_rw_ack[1]), .e_rw_data, .p_hold(perf[6]),
+    .p_busy(), .p_mwait(), .p_full(), .p_depth(), .p_frhold(), .p_cmdw(), .p_dmacmd(),
     .crtc(gd2_crtc), .ctrl_lo(gd2_layer), .fr_alpha(gd2_alpha), .fr_x(gd2_x), .fr_y(gd2_y), .fr_w(gd2_w),
     .fr_h(gd2_h), .fr_base(gd2_base), .reg_6c(gd2_6c),
     .st_a(st_a[5:0]), .st_d(st_gcu2), .st_we(st_we && st_a[13:6] == 8'h22), .st_wd
@@ -739,7 +800,11 @@ fb_gcu #(.NG(2), .VBASE2(32'h3200_0000)) u_eng (
 );
 assign perf[4:3] = ~e_ready;
 end else begin : g_no_gcu2
-assign {perf[21:10], perf[6], perf[4:0]} = '0;
+// perf[17:16]: kbm's GCU 1 depth; here a command word reaching a port, and one from the DMA
+assign {perf[21:18], perf[4], perf[1]} = '0;
+assign perf[17:16] = {s_dmacmd, s_cmdw};
+// perf[6]: kbm's GCU 1 port write held; here the frame register write waiting for the engine
+assign {perf[15:10], perf[6], perf[3], perf[2], perf[0]} = {s_depth, s_frhold, s_full, s_mwait, s_busy};
 assign {gcu2_ack, gcu2_q, gcu2_drop, st_gcu2} = '0;
 assign gcu2_idle = 1'b1;
 assign {e_push[1], e_push_d[1], e_rw_req[1], e_rw_addr[1]} = '0;
@@ -751,7 +816,7 @@ end endgenerate
 
 // the ATA interface: MAME's internal value is the bus halfword byte-swapped
 wire [15:0] ata_wd = (r_lane == 2'd0) ? {r_wdata[23:16], r_wdata[31:24]} : {r_wdata[7:0], r_wdata[15:8]};
-fb_ata #(.NO_DISC1(POPN)) u_ata (
+fb_ata #(.NO_DISC1(POPN), .ABSENT1(BM3)) u_ata (
     .clk, .reset, .por, .kbm_en,
     .req(ata_req), .we(r_we), .cs1(r_dev == D_ATA1), .off({r_addr[3:2], r_lane[1]}), .wdata(ata_wd),
     .ack(ata_ack), .rdata(ata_q), .irq(ata_irq),
@@ -761,7 +826,7 @@ fb_ata #(.NO_DISC1(POPN)) u_ata (
     .lg_a(st_a[11:0]), .lg_d(st_ata_log), .bad(ata_bad)
 );
 
-assign bad = dma_bad || spu_bad || flash_bad || ata_bad;
+assign bad = dma_bad || spu_bad || flash_bad || ata_bad || fdc_bad;
 
 // the speaker: YMZ280B outputs 1 and 0 to its left and right (firebeat.cpp:770-771), CD audio straight
 function automatic logic signed [15:0] mix(input logic signed [15:0] a, b);

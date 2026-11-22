@@ -41,6 +41,8 @@ fb_ns16550 u_ch (
 );
 fb_midibridge u_br (
     .clk, .reset(rst), .brd_reset(rst), .held, .mute(1'b0), .tx_v, .tx_byte,
-    .m_write, .m_addr, .m_burst(), .m_wdata, .m_wdata_hi, .m_waitn
+    .send_v(1'b0), .send_l(16'd0), .send_r(16'd0), .server_on(),
+    .m_read(), .m_write, .m_addr, .m_burst(), .m_wdata, .m_wdata_hi, .m_waitn,
+    .m_rvalid(1'b0), .m_rdata(32'd0)
 );
 endmodule

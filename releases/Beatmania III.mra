@@ -1,0 +1,41 @@
+<misterromdescription>
+    <name>Beatmania III</name>
+    <setname>bm3</setname>
+    <rbf>Firebeat_bm3</rbf>
+    <mameversion>0289</mameversion>
+    <year>2000</year>
+    <manufacturer>Konami</manufacturer>
+    <category>Rhythm</category>
+    <rotation>horizontal</rotation>
+
+    <!-- rtl/firebeat_sys.sv's download: the BIOS (ROM_LOAD16_WORD_SWAP), the SPU's program
+         (likewise) at 0x80000, the dongle at 0x100000, the RTC preset at 0x102000 (the NVRAM
+         file, loaded after, replaces it); written and checked by scripts/gen_mra.py. The discs go in the OSD's slots:
+         gc97201.chd as the program CD, gc97202.chd as the hard disk. -->
+    <rom index="0" zip="bm3.zip" md5="none">
+        <interleave output="16">
+            <part name="972maina01.21e" crc="9de35bfd" map="12"/>
+        </interleave>
+        <interleave output="16">
+            <part name="972spua01.3q" crc="308dbcff" map="12"/>
+        </interleave>
+        <part name="gq972" crc="b74dc63b"/>
+        <part repeat="0x1f38">FF</part>
+        <part name="rtc" crc="20eff14e"/>
+        <!-- fast boot (docs/HACKS.md): each work RAM test's bl as li r3,0, and the dead compare after
+             it (beq +0) given the byte difference, so the BIOS's byte sum is unchanged -->
+        <patch offset="0x031ec">38 60 00 00</patch>
+        <patch offset="0x031f2">00 39</patch>
+        <patch offset="0x03218">38 60 00 00</patch>
+        <patch offset="0x0321e">00 26</patch>
+    </rom>
+    <!-- the cabinet register's nibble (firebeat.cpp cabinet_r; Firebeat.sv): 00 Japan (init_popn_jp) -->
+    <rom index="1">
+        <part>00</part>
+    </rom>
+    <!-- the three flash chips (6 MB) and the RTC (MAME's .nv, 4,152 bytes): the installed game and its
+         settings (rtl/firebeat_sys.sv, ioctl index 4) -->
+    <nvram index="4" size="6295608"/>
+    <!-- Firebeat.sv's J1 line: joystick bit 4 + i is name i -->
+    <buttons names="Key 1,Key 2,Key 3,Key 4,Key 5,Start,Pedal,Coin,Test,Service,Pause,Effect" count="1"/>
+</misterromdescription>

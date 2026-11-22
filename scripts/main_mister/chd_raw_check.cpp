@@ -5,7 +5,8 @@
 // the core does, and compare every byte of its frames with the .bin `chdman extractcd` wrote for
 // the same CHD; then print the TOC block that follows them (rtl/board/fb_cd_slot.sv's format).
 // A DVD CHD (served as its sectors, no TOC block) is compared with `chdman extractraw` output,
-// which may be a range of the disc starting at byte START.
+// which may be a range of the disc starting at byte START. A hard disk CHD likewise, and the
+// geometry block after its sectors is printed.
 // The SPI, file and core-name functions Main provides on the MiSTer are stubbed here.
 //
 //     scripts/main_mister/chd_raw_check.sh <file.chd> <file.bin> [START]
@@ -48,8 +49,17 @@ int main(int argc, char **argv)
 	int writable = 1;
 	if (!firebeat_mount_hook(0, argv[1], &f, &writable)) { fprintf(stderr, "mount refused\n"); return 1; }
 	long long data_bytes = ((bin_size + 511) / 512) * 512;
-	bool dvd = f.size % 2048 == 0 && f.size != data_bytes + 1024;
-	if (dvd) printf("served size %lld: a DVD, compared from byte %lld\n", (long long)f.size, start);
+	captured_sz = 0;
+	if (firebeat_sd_service(0, 1, (uint64_t)(f.size - 512) / 512, 512, 0) != 1 || captured_sz != 512) { fprintf(stderr, "last block read failed\n"); return 1; }
+	bool hdd = f.size % 512 == 0 && !memcmp(captured, "FBHD", 4);
+	bool dvd = hdd || (f.size % 2048 == 0 && f.size != data_bytes + 1024);
+	if (hdd)
+	{
+		uint32_t g[4];
+		for (int i = 0; i < 4; i++) g[i] = captured[8 + 4 * i] | captured[9 + 4 * i] << 8 | captured[10 + 4 * i] << 16 | (uint32_t)captured[11 + 4 * i] << 24;
+		printf("served size %lld: a hard disk, FBHD v%d %u/%u/%u/%u, compared from byte %lld\n", (long long)f.size, captured[4], g[0], g[1], g[2], g[3], start);
+	}
+	else if (dvd) printf("served size %lld: a DVD, compared from byte %lld\n", (long long)f.size, start);
 	else printf("served size %lld: .bin %lld, padded %lld, TOC 1024\n", (long long)f.size, bin_size, data_bytes);
 
 	static uint8_t ref[16384];

@@ -19,6 +19,7 @@ every frame.
 | SPU registers, receive queue | `fb_spu.sv` `regs`, `rq` | 8 x 9; 8 x 16 | 25 | yes |
 | DCR store | `rtl/board/fb_board.sv` `u_dcr` (MLAB) | 32 x 256 | 1 KB | yes |
 | GCU queue (VRAM words and commands, in order) | `rtl/board/fb_gcu.sv` `qm` | 130 x 32 | 520 | yes, or drained before the dump |
+| bm3: GCU word bypass FIFO, gathered beats and held command | `rtl/board/fb_gcu_wbyp.sv` `wf_mem`, `lo_mem`/`hi_mem`, `pc_d` | 55 x 512; 64 x 64 x 2; 130 | 3.5 KB | skip: empty when `gcu_idle`, which the dump waits for |
 | GCU row buffers | `fb_gcu.sv` `g_sb` (4 copies), `g_dbf`, `db_be` | 64 x 256 x 4; 16 x 128 x 4; 4 x 128 | 9 KB | skip: hold one command's row; a dump waits for the engine to be idle |
 | YMZ280B registers | `rtl/board/fb_ymz280b.sv` `regs` | 8 x 256 | 256 | yes |
 | CD audio ring | `rtl/board/fb_cd_slot.sv` `ring`, `tag` (x 2 drives) | 16 x 8192; 4 x 33 | 16 KB a drive | skip: refilled from the slot |
@@ -26,14 +27,17 @@ every frame.
 | ATAPI packet and data-out bytes | `fb_atapi.sv` `cmd`, `dout` | 8 x 12; 8 x 64 | 76 a drive | yes |
 | disc TOC | `rtl/board/fb_cd_slot.sv` `t_lo`, `t_hi`, `t_fl`, `t_ct` | 48 x 128 | 768 a drive | skip: read from the slot again at mount |
 | MIDI keyboard note map | `rtl/kbm_usbmidi.sv` `on` | 128 | 16 bytes | skip: input, like the PS/2 keys |
+| bm3 turntable counts and effect dials | `rtl/bm3_ctrl.sv` `tt`, `dial`, `a_prev` | 10 x 2; 5 x 7; 8 x 2 | 12 bytes | yes: the game reads the counts relative, and a restored count unlike the saved one is a turn of the deck or dial |
 | English-instructions disc identity | `rtl/board/fb_kbm_en.sv` `vol` | 32 | 4 bytes | skip: read again with the volume descriptor at boot |
 | DMA source blocks | `rtl/board/fb_ppc_dma.sv` `blk`, `fb` | 256 x 3 | 96 | skip if the dump waits for the DMA to be idle |
 | SPU RAM | `rtl/spu/fb_spu68k.sv` `ram_h`, `ram_l` | 8 x 128K x 2 | 256 KB | yes; not yet reachable from the dump |
 | SPU dual-port RAM | `fb_spu68k.sv` `dp` | 8 x 1024 | 1 KB | yes; not yet reachable |
 | SPU program ROM | SDRAM 0x2880000 | 16 x 256K | 512 KB | skip: the `.mra` |
 | SPU wave RAM | SDRAM 0x4000000 | 16 x 16M | 32 MB | yes: loaded from the DVD by the game |
-| RF5C400 channel registers and state | `rtl/spu/fb_rf5c400.sv` `r_*`, `s_mem`, `offs` | 32 x (11 x 16 + 22); 32 x 106; 32 x 16 | ~1.5 KB | yes; not yet reachable |
+| RF5C400 channel registers and state | `rtl/spu/fb_rf5c400.sv` `r_*`, `s_mem`, `offs` | 32 x (12 x 16 + 22); 32 x 106; 32 x 16 | ~1.6 KB | yes; not yet reachable |
 | display line buffer | `rtl/video/fb_gcu_disp.sv` `g_lb` | 18 x 512 x 4 | 4.5 KB | skip: rebuilt every line |
+| bm3's pixel FIFO to the HDMI rotator | `rtl/video/fb_pix_cdc.sv` | 17 x 16 | 34 bytes | skip: drained every pixel |
+| the sound server bridge's queues and counts (bytes, send frames) | `rtl/board/fb_midibridge.sv` `q`, `f` | 40 x 8; 64 x 8 | 104 bytes | skip: the server's side; a restore restarts the rings and the server follows the counts |
 
 ## Registers and FSMs
 
@@ -41,6 +45,7 @@ every frame.
 |---|---|---|---|---|
 | cache dirty, LRU | `fb_cache.sv` `dt`, `lru` (valid bits: in the tag RAMs, `tmem`'s top bit) | I 1,024, D 512 | with the cache contents | none (MAME has no cache) |
 | ATAPI task file, timers, sense, media change, play position | `fb_atapi.sv` (status ... a_smp) | ~400 a drive | yes | atahle/atapihle/t10mmc/cdda save_items |
+| BM3: the SPU's hard disk: task file, timers, the seek's computation, the ring's pointers | `rtl/spu/fb_atahdd.sv` (generated list, 53 words) | ~1,100 | yes; `st_a` not wired into the dump yet, as popn's SPU drive | atahle, atastorage save_items |
 | SPU registers, timer counters | `fb_spu.sv` | ~120 | yes | ppccom `m_spu` |
 | SPU 68000 (fx68k), mailboxes, IRQ2/6, timer, DMA address, wave bank; the SPU drive | `fb_spu68k.sv`, `firebeat_sys.sv` `g_spu` | fx68k's internal state | yes; fx68k has no state port, the dump does not reach them yet | m68000, firebeat_spu_state save_items |
 | flash modes, status, erase timers, the background erase | `rtl/board/fb_flash.sv` | ~180 | yes | intelfsh save_items |
@@ -48,7 +53,7 @@ every frame.
 | RTC index, page, update and periodic timers | `fb_rtc65271.sv` | ~110 | yes | rtc65271 save_items |
 | PC16552D registers, THR-empty pending | `rtl/board/fb_pc16552.sv` | ~100 | yes | ins8250 save_items |
 | GCU shell registers, ports, IRQ; the display registers (CRTC, contexts, layer select, 0x6C) | `rtl/board/fb_gcu_shell.sv` | ~250; 640 | yes | k057714 save_items (`m_frame`, `m_display_*`, `m_layer_select`, `m_reg_6c`) |
-| display timing and the frame's latched contexts | `rtl/video/fb_gcu_disp.sv` (`h`, `v`, `hlast` ... `l_fac`) | ~600 | the counters yes; the latched set is re-taken at the next frame, from the shell's registers | the screen's position (MAME's screen device) |
+| display timing and the frame's latched contexts | `rtl/video/fb_gcu_disp.sv` (`h`, `v`, `hlast` ... `l_fac`; on bm3 `h`, `v` on clk_vid, and `g_cross`'s line-start toggle) | ~600 | the counters yes; the latched set is re-taken at the next frame, from the shell's registers | the screen's position (MAME's screen device) |
 | GCU origin; display-list position and stack | `rtl/board/fb_gcu.sv` `org_x`, `org_y`; `depth`, `dl_wa`, `dl_cnt`, `stk_wa`, `stk_cnt` | 24; 41 + 8 x 37 | the origin yes (`m_fb_origin_x/y`, G:65-66); the list state is empty when the engine is idle | k057714 save_items |
 | PPC architectural state | `ppc403_core.sv`, its dbg read and state-load ports (0-62) | | yes | `ppccom.cpp` state entries |
 
@@ -76,6 +81,7 @@ the registers and lets the game replay; Tier 2 continues bit-exactly.
 | HDMI rotator's line RAMs and buffers (`rtl/video/fb_rot16.sv`) | a copy of the picture; rewritten every frame |
 | DMA source blocks, the GCU's queue and row buffers, DDR3 read FIFO, SDRAM request pipeline | a dump waits for idle; nothing in them is state the next request does not re-derive |
 | ATAPI transfer buffers while no transfer is under way | refilled from the slot per read |
+| BM3: the hard disk's ring (`fb_atahdd` `ring`, 16 sectors) | sectors from the slot; a restore with the ring empty refetches (the sector being transferred is lost, as an ATAPI transfer's) |
 | SNAC pad poller (`rtl/mister/psx_pad_snac.sv`) | the host's controller, not the board's; re-read at the next poll (2 ms) |
 | YMZ280B sample cache (`debug/ymz_ref` is the reference) | the samples are in the flash, which is saved |
 
@@ -104,7 +110,7 @@ Register block (`fb_board` `st_a`/`st_d`):
 | Words | What |
 |---|---|
 | 0x0000-0x003F | `ppc403_core` state codes 0-63 (above; 63 unused) |
-| 0x0100-0x01FF | ATAPI drives, drive 1 from 0x0180: `fb_atapi`'s two lists (protocol 0x00-0x3F, engine 0x40-0x7F) |
+| 0x0100-0x01FF | ATAPI drives, drive 1 from 0x0180: `fb_atapi`'s two lists (protocol 0x00-0x3F, engine 0x40-0x7F). BM3: drive 1 is `fb_atapi_absent`, not captured (reads 0); its DASP, PDIAG and 2 ms timer restore as after reset |
 | 0x0200-0x027F | `fb_spu` |
 | 0x0280-0x02BF | `fb_rtc65271`'s counters, page and index (its registers are in the NVRAM image) |
 | 0x0300-0x033F | `fb_flash` |
@@ -113,10 +119,11 @@ Register block (`fb_board` `st_a`/`st_d`):
 | 0x0400-0x04FF | `fb_ppc_dma` |
 | 0x0500-0x05FF | the DCR store (`u_dcr`) |
 | 0x0600-0x06FF | the YMZ280B shell's registers, read only |
-| 0x0700-0x077F, 0x0780-0x07FF | KBM: the MIDI UART's channels 0 and 1 (`fb_ns16550`), the registers then 0x40-0x4F the receive FIFO and 0x50-0x5F the transmit FIFO. The FIFOs are read through their one port while the CPU is halted, while the UARTs' 24 MHz enable and the keyboards' timers stop for the hold |
+| 0x0700-0x077F, 0x0780-0x07FF | KBM, BM3: the MIDI UART's channels 0 and 1 (`fb_ns16550`), the registers then 0x40-0x4F the receive FIFO and 0x50-0x5F the transmit FIFO. The FIFOs are read through their one port while the CPU is halted, while the UARTs' 24 MHz enable and the keyboards' timers stop for the hold |
 | 0x0800-0x083F, 0x0840-0x087F | KBM: the two MIDI keyboards (`fb_midi_kbd`) |
 | 0x0880-0x08BF | KBM: the second GCU's shell (`u_gcu2`); its VRAM (DDR3 0x32000000) follows the first in the dump, the header's VRAM size 64 MB |
 | 0x08C0 | `fb_board`: [31:24] the control register, [16] IRQ1's latch, [15:8] the extend board's active bits, [7:0] its enable |
+| 0x08E0-0x08FF | BM3: the floppy controller (`fb_floppy`, ao486's `floppy.v`): not captured, reads 0. Its command, FIFO (1 KB) and the wrapper's sector buffer (1 KB) are lost; a dump taken while bm3 is not using the drive restores it as reset |
 | 0x1000-0x17FF | the slave drive's access log (`fb_ata`), 1024 entries of two words, a ring from power-on: word 0 [31] write, [30] cs1, [29:27] register, [25:16] repeats - 1 (saturating), [15:0] data as `fb_ata` takes it (the bus halfword byte-swapped); word 1 the time in microseconds. An access equal to the one before counts a repeat |
 | 0x1800 | the number of log entries made since power-on |
 | 0x2000-0x3037 | the RTC's NVRAM image (MAME's .nv format), a byte a word |

@@ -8,6 +8,8 @@
 // Running status is kept; realtime bytes (clock F8, active sense FE) pass through without
 // breaking it; system common and SysEx cancel it. All notes clear on CC 120 or 123, when off, or
 // when active sense has been seen and the line then goes quiet for 300 ms.
+// The modulation wheel (CC 1, any channel) sets P1's wheel, 0-127 as 0x00-0xFF, and marks it valid
+// until disabled.
 
 module kbm_usbmidi (
 	input             clk,                  // 66.667 MHz
@@ -16,7 +18,9 @@ module kbm_usbmidi (
 	input       [3:0] offset,               // the window's first note: 60, 72, 84, 96, 0, 12, 24, 36, 48
 	input             split,
 	output reg [23:0] keys0 = 24'd0,        // P1 (left), 1 = down
-	output reg [23:0] keys1 = 24'd0
+	output reg [23:0] keys1 = 24'd0,
+	output reg  [7:0] wheel = 8'd0,         // P1's
+	output reg        wheel_v = 1'b0
 );
 
 // 31250 baud from 66.667 MHz: 3 in 6,400, exact
@@ -75,13 +79,17 @@ always @(posedge clk) begin
 			else begin
 				second <= 1'b0;
 				if (rstat[7:5] == 3'b100) on[d1] <= rstat[4] && rx_b != 8'd0;
+				if (rstat[7:4] == 4'hB && d1 == 7'd1) begin wheel <= {rx_b[6:0], rx_b[6]}; wheel_v <= 1'b1; end
 				if (rstat[7:4] == 4'hB && (d1 == 7'd120 || d1 == 7'd123)) on <= 128'd0;
 			end
 		end
 	end
 
 	if (sensed && quiet == 25'd20_000_000) begin on <= 128'd0; sensed <= 1'b0; end
-	if (!enable) begin on <= 128'd0; rstat <= 8'd0; sensed <= 1'b0; end
+	if (!enable) begin
+		on <= 128'd0; rstat <= 8'd0; sensed <= 1'b0;
+		wheel_v <= 1'b0;
+	end
 end
 
 wire [151:0] onx = {24'd0, on};

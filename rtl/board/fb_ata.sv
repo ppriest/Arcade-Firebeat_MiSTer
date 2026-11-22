@@ -10,9 +10,13 @@
 //
 // NO_DISC1 (Pop'n Music): the slave drive is there with no disc and no image slot (firebeat_popn
 // keeps firebeat's ata:1 CD-ROM, empty); hps_io slot 1 is the SPU's.
+//
+// ABSENT1 (BM3, with NO_DISC1): the slave is fb_atapi_absent, only the DASP and PDIAG an unselected
+// empty drive shows; bm3 never selects it (HACKS).
 
 module fb_ata #(
-    parameter bit NO_DISC1 = 1'b0
+    parameter bit NO_DISC1 = 1'b0,
+    parameter bit ABSENT1  = 1'b0
 ) (
     input  logic        clk,
     input  logic        reset,
@@ -92,6 +96,14 @@ assign st_d = st_dd[st_a[7]];
 
 genvar d;
 generate for (d = 0; d < 2; d++) begin : g_drv
+    if (d == 1 && ABSENT1) begin : g_absent
+    fb_atapi_absent u_drv (
+        .clk, .reset, .tick_us, .acc, .we, .cs1, .off, .wd(wdata),
+        .dasp_o(dasp_o[d]), .pdiag_o(pdiag_o[d]), .bad(bad_d[d])
+    );
+    assign {resp[d], rd[d], irq_o[d], toc_a[d], rq[d], rq_lba[d], rq_half[d], play_on[d], play_lba[d],
+            play_smp[d], play_tick[d], vol0[d], vol1[d], check[d], check_key[d], st_dd[d]} = '0;
+    end else begin : g_atapi
     fb_atapi #(.CSEL(d[0])) u_drv (
         .clk, .reset, .tick_us,
         .acc, .we, .cs1, .off, .wd(wdata), .resp(resp[d]), .rd(rd[d]), .dma_acc(1'b0), .dmarq(),
@@ -107,6 +119,7 @@ generate for (d = 0; d < 2; d++) begin : g_drv
         .st_a(st_a[6:0]), .st_d(st_dd[d]), .st_we(st_we && st_a[7] == d[0]), .st_wd,
         .bad(bad_d[d])
     );
+    end
     if (d == 0 || !NO_DISC1) begin : g_slot
     fb_cd_slot u_slot (
         .clk, .reset(por), .brd_reset(reset),

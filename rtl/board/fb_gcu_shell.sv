@@ -10,23 +10,25 @@
 // collects a command word (the four go to fb_gcu when the fourth arrives); otherwise it is a VRAM
 // word at the port's address, which then advances. Addresses written are byte addresses of 16-bit
 // pixels: the 32-bit word index is the value / 2 (& 0xFFFFFF first). Words and commands enter
-// fb_gcu's queue in the order written; a port write waits while the queue is full.
+// fb_gcu's queue in the order written; a port write waits while the queue is full. BYP (bm3): words go
+// past it through fb_gcu_wbyp, and a command waits there for the words written before it.
 //
 // Reads: 0x80-0xFC the VRAM words from the read address on, once the queue has drained; 0x78 status:
 // 0xFFFF0005 as MAME's, except that bits 1:0 (port 0) or 3:2 (port 1), the ready fields the code
-// polls (FFF863D8, 80042A88), read 0 while a DMA transfer feeds that port (fb_board, dma_hold low);
-// anything else 0xFFFFFFFF.
+// polls (FFF863D8, 80042A88), read 0 while a DMA transfer feeds that port; the CPU never sees it,
+// as fb_board holds its GCU accesses until a transfer ends. Anything else 0xFFFFFFFF.
 //
 // vblank: at its start the IRQ rises if IRQ control bit 0 is set; a write of IRQ control with
 // bit 0 clear drops it and pulses irq_drop. irq_clr drops it too: on kbm both GCUs drive the one
 // IRQ0 line (firebeat.cpp gcu_interrupt), so the second GCU's clear clears the first's.
 //
-// The display registers go to fb_gcu_disp as written; reset gives them device_reset's values
-// (G:83-125): the CRTC at the table's mode 0, 640 x 480, every context empty with alpha 16.
+// The display registers go to fb_gcu_disp as written, 0x20-0x4C once the engine is idle; reset
+// gives them device_reset's values (G:83-125): the CRTC at the table's mode 0, 640 x 480, every context empty with alpha 16.
 
 module fb_gcu_shell #(
     parameter logic [31:0] VBASE = 32'h3000_0000,  // the engine's VRAM in DDR3
-    parameter bit          ENG   = 1'b1            // 0: no engine here, e_* go to a shared one (kbm)
+    parameter bit          ENG   = 1'b1,           // 0: no engine here, e_* go to a shared one (kbm)
+    parameter bit          BYP   = 1'b0            // ENG: VRAM words go past the engine's queue (fb_gcu_wbyp, bm3)
 ) (
     input  logic        clk,
     input  logic        reset,
@@ -81,6 +83,13 @@ module fb_gcu_shell #(
     input  logic        e_rw_ack,
     input  logic [31:0] e_rw_data,
     output logic        p_hold,         // the probes: a port write waits for room in the queue
+    output logic        p_frhold,       // ... a frame register write waits for the engine
+    output logic        p_cmdw,         // ... a word reaches a port's command buffer (CPU or DMA)
+    output logic        p_dmacmd,       // ... the DMA's word does
+    output logic        p_busy,         // ENG: the engine running, waiting on DDR3, its queue full, its depth
+    output logic        p_mwait,
+    output logic        p_full,
+    output logic [5:0]  p_depth,
 
     output logic [2:0][31:0] crtc,      // registers 0x00-0x08 as written
     output logic [15:0] ctrl_lo,        // register 0x10's low half, the layer select
@@ -115,12 +124,35 @@ logic [22:0]  r_a;
 logic [31:0]  r_d;
 
 generate if (ENG) begin : g_eng
+logic         x_push, x_ready, x_idle;
+logic [129:0] x_d;
+logic         x_read, x_write, x_waitn;
+logic [31:0]  x_addr, x_wdata, x_wdata_hi;
+logic [10:0]  x_burst;
+logic [3:0]   x_be, x_be_hi;
 fb_gcu #(.VBASE(VBASE)) u_eng (
-    .clk, .reset, .push(q_push), .push_d(q_in), .ready(q_ready), .idle(e_idle), .skip,
+    .clk, .reset, .push(x_push), .push_d(x_d), .ready(x_ready), .idle(x_idle), .skip,
     .rw_req(r_on && e_idle), .rw_addr(r_a), .rw_ack(r_ack), .rw_data(r_d),
-    .m_read, .m_write, .m_addr, .m_burst, .m_be, .m_wdata, .m_be_hi, .m_wdata_hi,
-    .m_waitn, .m_rvalid, .m_rdata, .m_rdata_hi
+    .m_read(x_read), .m_write(x_write), .m_addr(x_addr), .m_burst(x_burst), .m_be(x_be),
+    .m_wdata(x_wdata), .m_be_hi(x_be_hi), .m_wdata_hi(x_wdata_hi),
+    .m_waitn(x_waitn), .m_rvalid, .m_rdata, .m_rdata_hi,
+    .p_busy, .p_g(), .p_mwait, .p_depth
 );
+if (BYP) begin : g_byp
+fb_gcu_wbyp #(.VBASE(VBASE)) u_byp (
+    .clk, .reset, .s_push(q_push), .s_d(q_in), .s_ready(q_ready), .s_idle(e_idle),
+    .e_push(x_push), .e_d(x_d), .e_ready(x_ready), .e_idle(x_idle),
+    .e_read(x_read), .e_write(x_write), .e_addr(x_addr), .e_burst(x_burst), .e_be(x_be),
+    .e_wdata(x_wdata), .e_be_hi(x_be_hi), .e_wdata_hi(x_wdata_hi), .e_waitn(x_waitn),
+    .m_read, .m_write, .m_addr, .m_burst, .m_be, .m_wdata, .m_be_hi, .m_wdata_hi, .m_waitn
+);
+end else begin : g_nobyp
+assign {x_push, x_d, q_ready, e_idle} = {q_push, q_in, x_ready, x_idle};
+assign {m_read, m_write, m_addr, m_burst, m_be, m_wdata, m_be_hi, m_wdata_hi} =
+       {x_read, x_write, x_addr, x_burst, x_be, x_wdata, x_be_hi, x_wdata_hi};
+assign x_waitn = m_waitn;
+end
+assign p_full = !q_ready;
 assign {e_push, e_push_d, e_rw_req, e_rw_addr} = '0;
 end else begin : g_ext
 assign e_push = q_push;
@@ -132,6 +164,7 @@ assign e_rw_addr = r_a;
 assign r_ack = e_rw_ack;
 assign r_d = e_rw_data;
 assign {m_read, m_write, m_addr, m_burst, m_be, m_wdata, m_be_hi, m_wdata_hi} = '0;
+assign {p_busy, p_mwait, p_full, p_depth} = '0;
 end endgenerate
 assign gcu_idle = e_idle;
 
@@ -141,6 +174,15 @@ assign dg_ready = !q_full && !q_push;
 
 logic vb_q;
 assign p_hold = req && we && !ack && !r_on && (addr == 8'h70 || addr == 8'h74) && (q_full || q_push);
+// a write of the display's frame registers (0x20-0x4C: origins, sizes, bases) waits until every
+// command and VRAM word queued before it is drawn, the order MAME's instant draws give: bm3 flips
+// its base at vblank without waiting for the engine (the DMA feeds the queue, the CPU runs on), and
+// fb_gcu_disp shows a buffer whose drawing has not finished, cleared or partly drawn
+wire fr_hold = (addr[7:4] == 4'h2 || addr[7:4] == 4'h3 || addr[7:4] == 4'h4) && (!e_idle || q_push);
+assign p_frhold = req && we && !ack && !r_on && fr_hold;
+wire cpu_wr = req && we && !ack && !r_on && !fr_hold && !((addr == 8'h70 || addr == 8'h74) && (q_full || q_push));
+assign p_dmacmd = dg_we && (dg_port ? mode1[8] : mode0[8]);
+assign p_cmdw = p_dmacmd || (cpu_wr && ((addr == 8'h70 && mode0[8]) || (addr == 8'h74 && mode1[8])));
 always_ff @(posedge clk) begin
     ack <= 1'b0;
     cmd_v <= 1'b0;
@@ -159,6 +201,7 @@ always_ff @(posedge clk) begin
                 ack <= 1'b1;
             end
         end else if ((addr == 8'h70 || addr == 8'h74) && (q_full || q_push)) ;
+        else if (fr_hold) ;
         else begin
             ack <= 1'b1;
             if (addr <= 8'h08) crtc_r[addr[3:2]] <= (crtc_r[addr[3:2]] & ~mask) | (wdata & mask);

@@ -4,7 +4,9 @@
 // by an .mra. One instance per slot. While `run` is high it issues read requests of
 // (BLKCNT+1) x 512-byte blocks, one after another: sequentially from block 0 (wrapping at the
 // image's end), or at pseudo-random blocks when `rnd` is high. It counts what came back and how
-// long each request took, for the ISSP probe (FirebeatCD.sv lays the bus out).
+// long each request took, for the ISSP probe (FirebeatCD.sv lays the bus out). `clear` sets the
+// first block to `start_lba`; with `limit` non-zero it stops after that many requests, and
+// run_clocks then times them. The checksum covers the first request after `clear`.
 //
 // The request handshake is hps_io's: sd_rd is held until sd_ack rises; the data arrive as
 // sd_buff_wr strobes while sd_ack is high; the request is over when sd_ack falls.
@@ -16,6 +18,8 @@ module cd_reader #(
     input  logic        clear,                  // zero the counters
     input  logic        run,
     input  logic        rnd,
+    input  logic [31:0] start_lba,
+    input  logic [15:0] limit,                  // requests to make, 0: no limit
 
     input  logic        mounted,                // img_mounted for this slot (a pulse)
     input  logic [63:0] img_size,
@@ -60,17 +64,17 @@ always_ff @(posedge clk) begin
         next_lba <= 32'd0;
     end
 
-    if (run) run_clocks <= run_clocks + 32'd1;
+    if (run && !(limit != 16'd0 && requests >= {16'd0, limit})) run_clocks <= run_clocks + 32'd1;
 
     case (st)
     IDLE:
-        if (run && have_image) begin
+        if (run && have_image && !(limit != 16'd0 && requests >= {16'd0, limit})) begin
             sd_lba <= next_lba;
             sd_rd  <= 1'b1;
             lat    <= 32'd0;
             first  <= 1'b1;
             st     <= ASK;
-            if (next_lba == 32'd0 && !sum_done) begin sum_on <= 1'b1; sum_left <= 12'd2047; end
+            if (!sum_done && !sum_on) begin sum_on <= 1'b1; sum_left <= 12'd2047; end
         end
     ASK: begin
         lat <= lat + 32'd1;
@@ -106,7 +110,7 @@ always_ff @(posedge clk) begin
 
     if (clear) begin
         requests <= 0; words <= 0; run_clocks <= 0; latency_sum <= 0; latency_max <= 0;
-        checksum <= 0; sum_on <= 1'b0; sum_done <= 1'b0; sum_left <= 12'd0; next_lba <= 32'd0;
+        checksum <= 0; sum_on <= 1'b0; sum_done <= 1'b0; sum_left <= 12'd0; next_lba <= start_lba;
     end
 end
 

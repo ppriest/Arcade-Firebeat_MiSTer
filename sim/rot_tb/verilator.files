@@ -1,2 +1,3 @@
 rtl/video/fb_rot16.sv
+rtl/video/fb_pix_cdc.sv
 sim/rot_tb/tb_rot.sv

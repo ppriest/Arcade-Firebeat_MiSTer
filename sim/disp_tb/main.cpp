@@ -13,6 +13,10 @@
 // VRAM is the window's vram_<end>.raw, the registers its regs_<end>.txt; the third frame out is
 // compared with screen_<end>.bin (0xFFRRGGBB, MAME's 5 to 8 bit expansion), every visible pixel.
 // The first 10 differing pixels are printed, every one with ALLDIFF set in the environment.
+// -GVCLK=1 (bm3): scan-out on clk_v, 100.7 MHz against clk's 66.667, the two clocks' edges
+// interleaved by time; the frame's length is reported in ns. A CRTC register's half the file has as 0
+// was never written, and device_reset's stands: the file has no masks (bm3 writes 0x08's low half
+// alone, which k057714.cpp ignores and fb_gcu_shell merges).
 
 #include "Vtb_disp.h"
 #include "verilated.h"
@@ -27,14 +31,26 @@ double sc_time_stamp() { return 0; }
 
 static Vtb_disp *t;
 static Ddr3Model ddr;
-static uint64_t clocks = 0;
+static uint64_t clocks = 0;                 // the scan-out clock's
+static double tc = 0, tv = 0;               // the next edge of clk, clk_v, in ns
+static const double PC = 15.0, PV = 1000.0 / 100.7;
 
-static void tick() {
-    ddr.sample(t);
-    t->clk = 1; t->eval();
-    ddr.drive(t);
-    t->clk = 0; t->eval();
+// one edge of whichever clock is next; true when it was the scan-out clock's
+static bool tick() {
+    if (!t->vclk_on || tc <= tv) {
+        ddr.sample(t);
+        t->clk = 1; t->eval();
+        ddr.drive(t);
+        t->clk = 0; t->eval();
+        tc += PC;
+        if (!t->vclk_on) { clocks++; return true; }
+        return false;
+    }
+    t->clk_v = 1; t->eval();
+    t->clk_v = 0; t->eval();
+    tv += PV;
     clocks++;
+    return true;
 }
 
 static void frame_edge() {
@@ -118,7 +134,10 @@ int main(int argc, char **argv) {
     f = fopen(regs.c_str(), "r");
     if (!f) { fprintf(stderr, "no %s\n", regs.c_str()); return 1; }
     unsigned a, v;
-    while (fscanf(f, "%x %x", &a, &v) == 2) if (a < 0x100) rf[a / 4] = v;
+    while (fscanf(f, "%x %x", &a, &v) == 2) if (a < 0x0C) {
+        if (v >> 16) rf[a / 4] = (rf[a / 4] & 0xFFFF) | (v & 0xFFFF0000);
+        if (v & 0xFFFF) rf[a / 4] = (rf[a / 4] & 0xFFFF0000) | (v & 0xFFFF);
+    } else if (a < 0x100) rf[a / 4] = v;
     fclose(f);
     for (int k = 0; k < 3; k++) t->crtc[k] = rf[k];
     t->layer = rf[0x10 / 4] & 0xFFFF;
@@ -151,15 +170,16 @@ int main(int argc, char **argv) {
     }
 
     t->reset = 1;
-    for (int i = 0; i < 8; i++) tick();
+    for (int i = 0; i < 24; i++) tick();
     t->reset = 0;
     // the first frame has the reset's timing; the second is built from the registers
     frame_edge(); frame_edge(); frame_edge();
 
     uint64_t c0 = clocks;
+    double ns0 = t->vclk_on ? tv : tc;
     int px = 0, py = -1, prev_de = 0, bad = 0, seen = 0, vs = 1;
     while (true) {
-        tick();
+        if (!tick()) continue;
         if (t->vid_vs && !vs) break;
         vs = t->vid_vs;
         if (!t->ce_pix) continue;
@@ -177,8 +197,9 @@ int main(int argc, char **argv) {
         }
         prev_de = de;
     }
-    printf("%dx%d, frame %llu clocks, %d pixels checked, %d differ; late lines %u; lat %d busy %d%%\n",
-           hv, vv, (unsigned long long)(clocks - c0), seen, bad, t->late, ddr.lat, ddr.busy);
+    double fns = (t->vclk_on ? tv : tc) - ns0;
+    printf("%dx%d, frame %llu clocks (%.0f ns, %.3f Hz), %d pixels checked, %d differ; late lines %u; lat %d busy %d%%\n",
+           hv, vv, (unsigned long long)(clocks - c0), fns, 1e9 / fns, seen, bad, t->late, ddr.lat, ddr.busy);
     bool ok = bad == 0 && seen == hv * vv && t->late == 0;
     delete t;
     return ok ? 0 : 1;

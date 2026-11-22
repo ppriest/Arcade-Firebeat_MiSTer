@@ -22,7 +22,13 @@
 //
 // test: the Phase 1 test picture instead of the registers: mode 1, one 512 x 384 context at VRAM 0.
 //
-// Pixel clock: clk / 4 (16.667 MHz, the 24 kHz mode; HACKS for 31 kHz).
+// Pixel clock: clk / 4 (16.667 MHz, the 24 kHz mode; HACKS for 31 kHz). VCLK (BM3, not with KBM):
+// scan-out (the timing, the buffer's reads, the scaling and the outputs) runs on clk_v / 4 instead,
+// clk_v 100.7 MHz for 25.175 MHz (ROADMAP Phase 10 decision B). The build stays on clk. Crossing:
+// the buffer is dual-clock; each line start goes to clk as a toggle with that line's next row, the
+// visible height and flip, held for the line; the factors are taken at line 0's start (as KBM's);
+// vblank is synchronised. The CRTC registers, test and flip reach clk_v unsynchronised: they hold
+// still while the game runs (bm3 writes no CRTC register), and a change shows at the frame's wrap.
 //
 // KBM: two GCUs on one output, the second's registers on b_* and its VRAM at BASE + 32 MB. screen
 // 0 shows the first, 1 the second, 2 both stacked: twice the lines at clk / 2, the same frame, one
@@ -35,9 +41,11 @@
 
 module fb_gcu_disp #(
     parameter logic [31:0] BASE = 32'h3000_0000,
-    parameter bit          KBM = 1'b0
+    parameter bit          KBM = 1'b0,
+    parameter bit          VCLK = 1'b0
 ) (
     input  logic             clk,
+    input  logic             clk_v,          // VCLK: the scan-out clock
     input  logic             reset,
     input  logic             test,
     input  logic [1:0]       screen,
@@ -75,8 +83,27 @@ module fb_gcu_disp #(
     output logic [7:0]       r, g, b,
     output logic             hs, vs, hb, vb,
     output logic             vblank,         // the timing's, for the GCU's IRQ
-    output logic [15:0]      late            // lines whose build had not finished when they began
+    output logic [15:0]      late,           // lines whose build had not finished when they began
+    // [Firebeat] the stp revision's probes, on clk: a visible line's build due (pr_lstart) for row
+    // pr_row, the previous build not finished then (pr_late), a build running, its read waiting for
+    // the port, and contexts 0 and 1's bases as latched for the frame
+    output logic             pr_lstart,
+    output logic [11:0]      pr_row,
+    output logic             pr_late,
+    output logic             pr_build,
+    output logic             pr_rwait,
+    output logic [1:0][23:0] pr_base
 );
+
+wire sclk = VCLK ? clk_v : clk;
+logic s_reset;                               // reset, on sclk
+generate if (VCLK) begin : g_srst
+    logic [1:0] rq;
+    always_ff @(posedge clk_v or posedge reset) if (reset) rq <= 2'b11; else rq <= {rq[0], 1'b0};
+    assign s_reset = rq[1];
+end else begin : g_nsrst
+    assign s_reset = reset;
+end endgenerate
 
 // ------------------------------------------------------------------------------------------
 // registers, or the test picture's
@@ -92,7 +119,9 @@ wire              stack = KBM && scr == 2'd2;
 logic [11:0]      half;                      // stack: the second screen's first line
 logic [11:0]      pn;                        // the next line to build, as shown
 logic [11:0]      vvis;
-wire  [11:0]      pl = fl ? vvis - 12'd1 - pn : pn;   // ... its line in the unflipped picture
+logic [11:0]      b_vvis;                    // vvis and fl as the build sees them
+logic             b_fl;
+wire  [11:0]      pl = b_fl ? b_vvis - 12'd1 - pn : pn;   // ... its line in the unflipped picture
 wire              use_b = KBM && (scr == 2'd1 || (stack && pl >= half));
 always_comb begin
     c_crtc = (KBM && scr == 2'd1) ? b_crtc : crtc;
@@ -134,7 +163,7 @@ logic [11:0] hvis, hs0, hs1, hlast, vs0, vs1, vlast;
 logic [11:0] h, v;
 logic [1:0]  div;
 logic        line_start;
-always_ff @(posedge clk) begin
+always_ff @(posedge sclk) begin
     div <= div + 2'd1;
     ce_pix <= stack ? div[0] : div == 2'd3;
     line_start <= 1'b0;
@@ -156,7 +185,7 @@ always_ff @(posedge clk) begin
             end else v <= v + 12'd1;
         end else h <= h + 12'd1;
     end
-    if (reset) begin
+    if (s_reset) begin
         div <= 2'd0; h <= 12'd0; v <= 12'd0;
         hvis <= r_hvis; hs0 <= r_hvis + r_hfp; hs1 <= r_hvis + r_hfp + r_hsy;
         hlast <= r_hvis + r_hfp + r_hsy + r_hbp - 12'd1;
@@ -170,7 +199,33 @@ wire t_hb = h >= hvis;
 wire t_vb = v >= vvis;
 wire t_hs = h >= hs0 && h < hs1;
 wire t_vs = v >= vs0 && v < vs1;
-assign vblank = t_vb;
+
+// the line start as the build sees it: b_start with the next row b_nxt, b_vvis, b_fl
+wire [11:0] nxt = (v == vlast) ? 12'd0 : v + 12'd1;
+logic       b_start;
+logic [11:0] b_nxt;
+generate if (VCLK) begin : g_cross
+    logic        ls_t, ls_fl;
+    logic [11:0] ls_nxt, ls_vvis;
+    logic [2:0]  ls_s;
+    logic [1:0]  vb_s;
+    always_ff @(posedge clk_v) if (line_start) begin
+        ls_t <= !ls_t; ls_nxt <= nxt; ls_vvis <= vvis; ls_fl <= fl;
+    end
+    always_ff @(posedge clk) begin
+        ls_s <= {ls_s[1:0], ls_t};
+        b_start <= ls_s[2] != ls_s[1];
+        if (ls_s[2] != ls_s[1]) begin b_nxt <= ls_nxt; b_vvis <= ls_vvis; b_fl <= ls_fl; end
+        vb_s <= {vb_s[0], t_vb};
+    end
+    assign vblank = vb_s[1];
+end else begin : g_ncross
+    assign b_start = line_start;
+    assign b_nxt = nxt;
+    assign b_vvis = vvis;
+    assign b_fl = fl;
+    assign vblank = t_vb;
+end endgenerate
 
 // ------------------------------------------------------------------------------------------
 // the line buffer: 4 banks by x & 3, each [half][x >> 2] of {drawn, context, pixel[14:0]}
@@ -186,10 +241,8 @@ genvar gk;
 generate
 for (gk = 0; gk < 4; gk++) begin : g_lb
     logic [17:0] mem [512];
-    always_ff @(posedge clk) begin
-        if (lb_we[gk]) mem[lb_wa[gk]] <= lb_wd[gk];
-        lb_q[gk] <= mem[lb_ra];
-    end
+    always_ff @(posedge clk) if (lb_we[gk]) mem[lb_wa[gk]] <= lb_wd[gk];
+    always_ff @(posedge sclk) lb_q[gk] <= mem[lb_ra];
 end
 endgenerate
 
@@ -230,8 +283,6 @@ logic [8:0]  sleft;                          // beats still to request
 logic [7:0]  sch;                            // beats of the burst in flight still to arrive
 logic [10:0] sk;                             // the arriving beat's first pixel index + soff
 
-wire [11:0] nxt = (v == vlast) ? 12'd0 : v + 12'd1;
-
 // slot setup over F_SLOT .. F_SL3: the slot's context, then its rows and columns, then its span
 wire [1:0]  u_f   = l_layer[8 + 2 * s +: 2];
 logic [1:0]  p_f;
@@ -259,10 +310,10 @@ wire        d_ge  = d_t >= {1'b0, l_a1[df]};
 always_ff @(posedge clk) begin
     if (m_read && m_waitn) m_read <= 1'b0;
 
-    if (line_start && nxt < vvis) begin
+    if (b_start && b_nxt < b_vvis) begin
         if (fs != F_IDLE || pend) begin if (late != 16'hFFFF) late <= late + 16'd1; end
         pend <= 1'b1;
-        pn <= nxt;
+        pn <= b_nxt;
     end
 
     case (fs)
@@ -368,6 +419,13 @@ always_ff @(posedge clk) begin
     end
 end
 
+assign pr_lstart = b_start && b_nxt < b_vvis;
+assign pr_row    = b_nxt;
+assign pr_late   = pr_lstart && (fs != F_IDLE || pend);
+assign pr_build  = fs != F_IDLE;
+assign pr_rwait  = m_read && !m_waitn;
+assign pr_base   = {l_base[1][23:0], l_base[0][23:0]};
+
 // the buffer's writes: a clear row, or a beat's drawn pixels, two clocks after the beat arrives
 // (F_IDLE waits for them before the next line's clear)
 logic [63:0] w_d;
@@ -428,7 +486,7 @@ assign lb_ra = {v[0], hx[9:2]};
 logic [17:0] px;
 logic [1:0]  hq;
 logic        hin;                            // hx within the buffer's 1024 columns
-always_ff @(posedge clk) begin
+always_ff @(posedge sclk) begin
     hq <= hx[1:0];
     hin <= hx < 12'd1024;
     px <= hin ? lb_q[hq] : 18'd0;
@@ -436,29 +494,62 @@ end
 
 // px is ready two clocks after h moves, the scaled channels three, the output takes them at the
 // fourth: the next ce_pix, or at clk / 2 the one after, so the timing is a pixel later there.
+// VCLK: the scaling takes three clocks (100.7 MHz), the channels are ready at the fifth, and the
+// output takes them at the ce_pix after, the timing a pixel later as at clk / 2.
 // KBM: a screen's factors take over as its first line is shown, its build having started a line
 // before, while the other screen's last line was showing.
 logic [8:0] fac;
 logic [4:0] sr, sg, sbl;
 logic       son;
 logic [3:0][8:0] o_fac;
-always_ff @(posedge clk) if (line_start && (v == 12'd0 || (stack && v == half))) o_fac <= l_fac;
-assign fac = KBM ? o_fac[px[16:15]] : l_fac[px[16:15]];
-always_ff @(posedge clk) begin
-    sr <= scale(px[14:10], fac);
-    sg <= scale(px[9:5], fac);
-    sbl <= scale(px[4:0], fac);
-    son <= px[17];
-end
+always_ff @(posedge sclk) if (line_start && (v == 12'd0 || (stack && v == half))) o_fac <= l_fac;
+assign fac = (KBM || VCLK) ? o_fac[px[16:15]] : l_fac[px[16:15]];
+function automatic logic [13:0] psum(input logic [4:0] c, input logic [8:0] a, input logic hi);
+    logic [13:0] acc;
+    acc = '0;
+    for (int i = 0; i < 9; i++) if (a[i] && (i >= 5) == hi) acc = acc + (14'(c) << i);
+    return acc;
+endfunction
+function automatic logic [4:0] sat(input logic [13:0] acc);
+    return (acc[13:4] > 10'd31) ? 5'd31 : acc[8:4];
+endfunction
+
+generate if (VCLK) begin : g_scale3
+    logic [2:0][4:0]  q_c;
+    logic [8:0]       q_f;
+    logic [2:0][13:0] q_lo, q_hi;
+    logic [1:0]       q_on;
+    always_ff @(posedge sclk) begin
+        q_c <= {px[14:10], px[9:5], px[4:0]};
+        q_f <= fac;
+        for (int k = 0; k < 3; k++) begin
+            q_lo[k] <= psum(q_c[k], q_f, 1'b0);
+            q_hi[k] <= psum(q_c[k], q_f, 1'b1);
+        end
+        sr <= sat(q_lo[2] + q_hi[2]);
+        sg <= sat(q_lo[1] + q_hi[1]);
+        sbl <= sat(q_lo[0] + q_hi[0]);
+        q_on <= {q_on[0], px[17]};
+        son <= q_on[1];
+    end
+end else begin : g_scale1
+    always_ff @(posedge sclk) begin
+        sr <= scale(px[14:10], fac);
+        sg <= scale(px[9:5], fac);
+        sbl <= scale(px[4:0], fac);
+        son <= px[17];
+    end
+end endgenerate
 
 logic d_hs, d_vs, d_hb, d_vb;
-always_ff @(posedge clk) if (ce_pix) begin d_hs <= t_hs; d_vs <= t_vs; d_hb <= t_hb; d_vb <= t_vb; end
-wire o_hs = stack ? d_hs : t_hs;
-wire o_vs = stack ? d_vs : t_vs;
-wire o_hb = stack ? d_hb : t_hb;
-wire o_vb = stack ? d_vb : t_vb;
+always_ff @(posedge sclk) if (ce_pix) begin d_hs <= t_hs; d_vs <= t_vs; d_hb <= t_hb; d_vb <= t_vb; end
+wire late_px = stack || VCLK;
+wire o_hs = late_px ? d_hs : t_hs;
+wire o_vs = late_px ? d_vs : t_vs;
+wire o_hb = late_px ? d_hb : t_hb;
+wire o_vb = late_px ? d_vb : t_vb;
 
-always_ff @(posedge clk) if (ce_pix) begin
+always_ff @(posedge sclk) if (ce_pix) begin
     hs <= o_hs; vs <= o_vs; hb <= o_hb; vb <= o_vb;
     if (o_hb || o_vb || !son) {r, g, b} <= 24'd0;
     else begin

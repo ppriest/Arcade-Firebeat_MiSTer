@@ -166,6 +166,15 @@ reg  [1:0] ba = 0;
 reg  [1:0] dqm;
 reg        active = 0;
 reg  [2:0] ram_req = 0;
+// [Firebeat] The requests, toggled in the clients' clock, taken a clk cycle before the controller
+// acts on them: the address, data and enables that come with a request are then loaded two or more
+// clk cycles after they change, and Firebeat.sdc gives those paths two cycles (setup and hold).
+reg        rq0 = 1'b0, rq1 = 1'b0, rq2 = 1'b0;
+always @(posedge clk) begin
+	rq0 <= req0;
+	rq1 <= req1;
+	rq2 <= req2;
+end
 wire [2:0] wr = {wrl2|wrh2,wrl1|wrh1,wrl0|wrh0};
 
 // rfs_cnt/rfs/rfs2 (access-manager block below) and init_old
@@ -252,7 +261,7 @@ always @(posedge clk) begin
 			rchip <= ~rchip;
 			state <= STATE_START;
 		end
-		else if (ack0 != req0) begin
+		else if (ack0 != rq0) begin
 			{chip,a25,ba,a} <= addr0;
 			data <= din0;
 			w2 <= 1'b0;   // [Hornet]
@@ -265,7 +274,7 @@ always @(posedge clk) begin
 			rfs <= rfs2;
 			state <= STATE_START;
 		end
-		else if (ack1 != req1) begin
+		else if (ack1 != rq1) begin
 			{chip,a25,ba,a} <= addr1;
 			data <= din1;
 			we <= wr[1];
@@ -278,7 +287,7 @@ always @(posedge clk) begin
 			rfs <= rfs2;
 			state <= STATE_START;
 		end
-		else if (ack2 != req2) begin
+		else if (ack2 != rq2) begin
 			{chip,a25,ba,a} <= addr2;
 			data <= din2;
 			w2 <= 1'b0;   // [Hornet]
@@ -349,9 +358,9 @@ always @(posedge clk) begin
 	if (state == (quad ? STATE_READ15 : dbl ? STATE_READ7 : STATE_READ3) && ram_req) begin
 		active <= 0;
 		ram_req <= 0;
-		if (ram_req[0]) ack0 <= req0;
-		else if (ram_req[1]) ack1 <= req1;
-		else if (ram_req[2]) ack2 <= req2;
+		if (ram_req[0]) ack0 <= rq0;
+		else if (ram_req[1]) ack1 <= rq1;
+		else if (ram_req[2]) ack2 <= rq2;
 	end
 
 	if(mode != MODE_NORMAL || state != STATE_IDLE || reset) begin
@@ -391,9 +400,11 @@ localparam CMD_LOAD_MODE       = 3'b000;
 
 // SDRAM state machines
 reg         dq_oe;
+reg         dq_oe_nx = 1'b0;   // [Firebeat] the next clock's dq_oe
 reg  [15:0] dq_out;
 reg         dq_sel2;   // [Firebeat] in STATE_CONTW
 reg   [2:0] cmd_nx = 3'b111;   // [Firebeat] the next clock's {nRAS,nCAS,nWE}
+reg  [12:0] a_nx = 13'd0;      // [Firebeat] the next clock's SDRAM_A
 assign SDRAM_DQ = dq_oe ? dq_out : 16'bz;
 
 always @(posedge clk) begin
@@ -404,7 +415,10 @@ always @(posedge clk) begin
 	// the state decode, and data/data2 hold from STATE_START. dq_oe still decides what is driven.
 	dq_sel2 <= (state == STATE_CONT);
 	dq_out  <= dq_sel2 ? data2 : data;
-	dq_oe   <= mode == MODE_NORMAL && active && we && (state == STATE_CONT || (state == STATE_CONTW && w2));
+	// [Firebeat] dq_oe is decoded a state early, as cmd_nx below: the decode straight into the
+	// output-enable registers missed setup by 0.114 ns on one seed.
+	dq_oe_nx <= mode == MODE_NORMAL && active && we && (state == STATE_CONT - 5'd1 || (state == STATE_CONTW - 5'd1 && w2));
+	dq_oe    <= dq_oe_nx;
 
 	// [Firebeat] The command is decoded a clock early into cmd_nx, so the I/O registers load a
 	// register. active, we, dbl, quad and w2 hold from STATE_START to the end of the access, and
@@ -420,7 +434,7 @@ always @(posedge clk) begin
 		else if(mode == MODE_NORMAL) begin
 			// the request branches below; with none, a nonzero reset counter still steps to START
 			if(rfs)                                                 cmd_nx <= CMD_AUTO_REFRESH;
-			else if(ack0 != req0 || ack1 != req1 || ack2 != req2)   cmd_nx <= CMD_ACTIVE;
+			else if(ack0 != rq0 || ack1 != rq1 || ack2 != rq2)   cmd_nx <= CMD_ACTIVE;
 			else if(reset != 0)                                     cmd_nx <= CMD_AUTO_REFRESH;
 		end
 	end
@@ -431,40 +445,46 @@ always @(posedge clk) begin
 		if((state == STATE_CONT3 - 5'd1 || state == STATE_CONT4 - 5'd1) && !we && quad) cmd_nx <= CMD_READ;
 	end
 
-	if(mode == MODE_NORMAL) begin
-		casex(state)
-			// Row/column split SWAPPED from upstream (upstream: row=a[13:1]
-			// (low bits), col=a[22:14] (high bits)). Upstream never bursts
-			// (BURST_LENGTH=0), so the split is an arbitrary choice there.
-			// For burst-4, the low address bits MUST select the column,
-			// since that's what the SDR chip auto-increments across a
-			// burst -- 4 consecutive word addresses need to land at 4
-			// consecutive columns of the SAME row, not 4 different rows.
-			// Confirmed as a real bug (not a hunch) by tb_sdram.sv: with
-			// the upstream split, a 4-word burst starting at word address N
-			// silently read from rows N, N+1, N+2, N+3 at column 0 each
-			// time -- wrong data, not just misaligned. See PROVENANCE.md.
-			STATE_START: SDRAM_A <= a[22:10];
-			// A10 = auto-precharge; A9 = byte address bit 25, which is column
-			// bit 9 on a 64 MB chip (13 row x 10 column x 4 bank) and ignored by
-			// the 32 MB chip (9 column bits) -- so the low 32 MB map identically
-			// on both modules. This is the 128 MB module's layout: 2 x 64 MB, the
-			// second chip selected by byte address bit 26, which this core does
-			// not use (FG-3 needs 56.5 MB).
-			// [GX] a double read's first READ leaves the row open (A10 low)
-			// for its second, at the next four columns, which precharges
-			STATE_CONT:  SDRAM_A <= {dqm, !(dbl || (we && w2)), a25, a[9:1]};
-			// [Hornet] the second halfword of a two-halfword write: the next column
-			STATE_CONTW: if (we && w2) SDRAM_A <= {dqm2, 1'b1, a25, a[9:2], 1'b1};
-			// [Firebeat] a quad read precharges only with its fourth READ
-			STATE_CONT2: if (dbl) SDRAM_A <= {dqm, !quad, a25, a[9:3], 2'b00} | 13'd4;
-			STATE_CONT3: if (quad) SDRAM_A <= {dqm, 1'b0, a25, a[9:3], 2'b00} | 13'd8;
-			STATE_CONT4: if (quad) SDRAM_A <= {dqm, 1'b1, a25, a[9:3], 2'b00} | 13'd12;
-		endcase
+	// [Firebeat] SDRAM_A loads a_nx, decoded a state early as cmd_nx above (the decode straight into
+	// the I/O registers missed setup by 0.119 ns on one seed). The row for STATE_START comes from the
+	// request taken at STATE_IDLE, as {chip,a25,ba,a} does; a refresh's address is not used.
+	//
+	// Row/column split SWAPPED from upstream (upstream: row=a[13:1] (low bits), col=a[22:14] (high
+	// bits)). Upstream never bursts (BURST_LENGTH=0), so the split is an arbitrary choice there. For
+	// burst-4, the low address bits MUST select the column, since that's what the SDR chip
+	// auto-increments across a burst -- 4 consecutive word addresses need to land at 4 consecutive
+	// columns of the SAME row, not 4 different rows. Confirmed as a real bug (not a hunch) by
+	// tb_sdram.sv: with the upstream split, a 4-word burst starting at word address N silently read
+	// from rows N, N+1, N+2, N+3 at column 0 each time -- wrong data, not just misaligned. See
+	// PROVENANCE.md.
+	//
+	// STATE_CONT: A10 = auto-precharge; A9 = byte address bit 25, which is column bit 9 on a 64 MB
+	// chip (13 row x 10 column x 4 bank) and ignored by the 32 MB chip (9 column bits) -- so the low
+	// 32 MB map identically on both modules. This is the 128 MB module's layout: 2 x 64 MB, the second
+	// chip selected by byte address bit 26, which this core does not use (FG-3 needs 56.5 MB).
+	// [GX] a double read's first READ leaves the row open (A10 low) for its second, at the next four
+	// columns, which precharges. [Hornet] STATE_CONTW: the second halfword of a two-halfword write,
+	// the next column. [Firebeat] a quad read precharges only with its fourth READ.
+	SDRAM_A <= a_nx;
+	if(state == STATE_IDLE) begin
+		if(mode == MODE_NORMAL) begin
+			if(rfs) ;
+			else if(ack0 != rq0) a_nx <= addr0[22:10];
+			else if(ack1 != rq1) a_nx <= addr1[22:10];
+			else if(ack2 != rq2) a_nx <= addr2[22:10];
+		end
+		else if(mode == MODE_LDM) a_nx <= MODE;
+		else if(mode == MODE_PRE) a_nx <= 13'b0010000000000;
+		else                      a_nx <= 13'd0;
 	end
-	else if(mode == MODE_LDM && state == STATE_START) SDRAM_A <= MODE;
-	else if(mode == MODE_PRE && state == STATE_START) SDRAM_A <= 13'b0010000000000;
-	else SDRAM_A <= 0;
+	else if(mode == MODE_NORMAL) begin
+		if(state == STATE_CONT - 5'd1)                  a_nx <= {dqm, !(dbl || (we && w2)), a25, a[9:1]};
+		if(state == STATE_CONTW - 5'd1 && we && w2)     a_nx <= {dqm2, 1'b1, a25, a[9:2], 1'b1};
+		if(state == STATE_CONT2 - 5'd1 && dbl)          a_nx <= {dqm, !quad, a25, a[9:3], 2'b00} | 13'd4;
+		if(state == STATE_CONT3 - 5'd1 && quad)         a_nx <= {dqm, 1'b0, a25, a[9:3], 2'b00} | 13'd8;
+		if(state == STATE_CONT4 - 5'd1 && quad)         a_nx <= {dqm, 1'b1, a25, a[9:3], 2'b00} | 13'd12;
+	end
+	else a_nx <= 13'd0;
 end
 
 // Upstream drives SDRAM_CLK via an altddio_out megafunction instance here
