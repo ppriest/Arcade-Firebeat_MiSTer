@@ -1,12 +1,12 @@
 #!/bin/bash
 # Scripts menu: adds ppp_enable to linux/user-startup.sh, so the PS2 ParaParaParadise controller is
 # enabled from boot; run again to remove it.
-BIN=/media/fat/Scripts/ppp_enable
+BIN=/media/fat/games/ppp_enable/ppp_enable
 STARTUP=/media/fat/linux/user-startup.sh
 TAG="# ParaParaParadise controller (ppp_enable)"
 
 if [ ! -x "$BIN" ]; then
-	echo "$BIN is missing: copy ppp_enable next to this script."
+	echo "$BIN is missing: unzip releases/ppp_controller_*.zip onto the SD card."
 	exit 1
 fi
 

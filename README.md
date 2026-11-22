@@ -29,9 +29,10 @@ with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 **20261122**
 * **Beta** Added: Beatmania III, Append Core Remix, 6th Mix, 7th Mix and The Final, `Arcade-Firebeat_bm3_*.rbf`
+  * There is some graphical flickering on the itnro/title for a couple of the games I still need to fix
   * Needs the new `MiSTer_Firebeat` (`releases/MiSTer_Firebeat_20261121.zip`) for the hard disk CHDs
   * Floppy disk saves: `releases/Firebeat_blank_floppies.zip`
-  * Effects through the Arcade Sound Server
+* ST-224 effect simulation (19 effects like Decay, Tremelo, etc.) through the Arcade Sound Server, or MIDI+Stereo out if you have a real device (untested). Makes no difference to play.
 * `MiSTer_Firebeat` updated: serves hard disk CHDs
 
 **20261114**
@@ -155,7 +156,7 @@ Controllers:
 
 | Controller | Game | Connection | Set-up |
 |-|-|-|-|
-| ParaParaParadise controller (PS2) | ParaParaParadise | USB | ***NOT WORKING YET***. Needs `MiSTer_Firebeat` (above), which switches it on; map its sensors to Sensor 1-5. This is based on sending the magic bytes indicated here https://github.com/Tatsh/pppps2pc/blob/master/pppps2pc/constants.py#L25 |
+| ParaParaParadise controller (PS2) | ParaParaParadise | USB | Needs `MiSTer_Firebeat` (above), which switches it on, or, with the standard Main, `releases/ppp_controller_*.zip` unzipped onto the SD card's root: run `ppp_controller` from the Scripts menu to switch it on until the next restart, or `ppp_controller_boot` once to switch it on at every boot (again to undo; the zip is not yet tried on the board). Then map its sensors and buttons. Remember that as it's a USB Joystick, you may need to reset the mapping of pcontrollers to players to use it. |
 
 ![PPP_PSX_Controller.jpg](docs/setup/PPP_PSX_Controller.jpg)
 
@@ -256,7 +257,7 @@ Each set's two discs go in a folder named after the set, under `games/`, with MA
 | Keyboardmania 3rd Mix | `games/kbm3rd/` | `a12jaa01.chd` | `a12jaa02.chd` |
 
 Mount both from the OSD after loading the game: **Program CD** the `...01` disc, **Audio CD** the
-`...02` disc. `Firebeat_disc_slots.zip` does not cover these sets yet.
+`...02` disc.
 
 **ATAPI: NG, ERROR 140: ATAPI INIT ERROR** at the BIOS's check means no Program CD was
 mounted: mount it, then reset (OSD, "Reset and close OSD").
@@ -354,6 +355,12 @@ Mount both from the OSD after loading the game: **Program CD** the `...01` disc,
 `...02` image. The hard disk CHDs need `MiSTer_Firebeat` ([Requirements](#requirements)); a raw
 image from `chdman extracthd` works with the standard Main. Files over 4 GB need an exFAT card.
 
+The game should just boot without needing to flash anything manually.
+
+![20261122_155239-screen.png](docs/setup/bm3/20261122_155239-screen.png)
+![20261122_155309-screen.png](docs/setup/bm3/20261122_155309-screen.png)
+![20261122_155316-screen.png](docs/setup/bm3/20261122_155316-screen.png)
+
 #### 3. Controls
 
 | Input | Use |
@@ -361,7 +368,7 @@ image from `chdman extracthd` works with the standard Main. Files over 4 GB need
 | Key 1-5 | the five keys |
 | Start | Start |
 | Pedal | the effect pedal: player 1's pedal picks effect setting A, player 2's setting B |
-| Effect | held: the d-pad steps the effect programs (Up/Down setting A's, Right/Left setting B's) and the deck stands still |
+| Effect | Fake control to give some control over which effect is used from the stick. Hold it down and use the d-pad to cycle through the effect programs (Up/Down setting A's, Right/Left setting B's) |
 | Coin, Test, Service | cabinet switches |
 | Pause | suspends the CPU |
 
@@ -375,8 +382,18 @@ Each player's turntable comes from the stick, the d-pad or the mouse, chosen wit
 | D-pad | the d-pad, or the stick pushed past half way, turns it |
 | Mouse | the mouse's left-right movement; the d-pad turns it |
 
-Keyboard: X is player 1's pedal; the cabinet's A and B buttons are 0 and Minus (MAME's keys),
-on the keyboard only; the seven effect dials step down and up on two keys each:
+I haven't tried one of the many PSX/PS2-era official or unofficial Betamania III or Betamania IIDX controllers. The USB ones should just work for the keys, but I've yet to ascertain whether the deck will require tweaking. SNAC support is not there for these as I don't have one.
+
+Keyboard: X is player 1's pedal; the cabinet's A and B buttons for the Service mode are mapped to 0 and Minus.
+
+#### 4. Effects
+
+The cabinet's effects unit (a Zoom SampleTrak ST-224 on MIDI) is optionally simulated by the Arcade Sound
+Server: its own versions of the 19 effects the game selects, applied to the sound the game sends
+to the unit. Without the server the core plays that sound without effects, as MAME does. The
+server's settings are under `[firebeat_bm3]` in `games/arcsnd/arcsnd.ini`.
+
+Changing the params for the effects are only mapped to the keyboard , not USB joystick.
 
 | Dial | Effect | Down | Up |
 |-|-|-|-|
@@ -388,12 +405,6 @@ on the keyboard only; the seven effect dials step down and up on two keys each:
 | 6 | setting B, parameter 2 | , | . |
 | 7 | setting B, program | ; | ' |
 
-#### 4. Effects
-
-The cabinet's effects unit (a Zoom SampleTrak ST-224 on MIDI) is played by the Arcade Sound
-Server: its own versions of the 19 effects the game selects, applied to the sound the game sends
-to the unit. Without the server the core plays that sound without effects, as MAME does. The
-server's settings are under `[firebeat_bm3]` in `games/arcsnd/arcsnd.ini`.
 
 #### 5. Floppy disk
 
@@ -406,7 +417,8 @@ same disk on its own (one copy per cabinet's records).
 `python scripts/make_floppy.py <file>` writes the same image. With nothing mounted the game runs as
 with an empty drive.
 
-Not yet tried on the board: the controller matches MAME in simulation (`sim/floppy_tb`).
+You might want to download a one with existing hiscores, ready to unlock the last song: https://lay.bm5keys-forever.com/en/2019/04/mnemoniq-ed-data/. This can be dropped in and used as-is.
+
 
 #### 6. Video output
 
@@ -431,6 +443,32 @@ controller. HDMI and analog RGB are unchanged.
 
 ![20261112_190301-screen.png](docs/screenshots/kbm/20261112_190301-screen.png)
 ![20261112_190524-screen.png](docs/screenshots/kbm/20261112_190524-screen.png)
+
+### Beatmania III
+
+![20261122_155340-screen.png](docs/screenshots/bm3/20261122_155340-screen.png)
+![20261122_155410-screen.png](docs/screenshots/bm3/20261122_155410-screen.png)
+
+### Beatmania III Append Core Remix
+
+![20261122_161626-screen.png](docs/screenshots/bm3core/20261122_161626-screen.png)
+![20261122_161220-screen.png](docs/screenshots/bm3core/20261122_161220-screen.png)
+
+### Beatmania III Append 6th Mix
+
+![20261122_155611-screen.png](docs/screenshots/bm36th/20261122_155611-screen.png)
+![20261122_155649-screen.png](docs/screenshots/bm36th/20261122_155649-screen.png)
+
+### Beatmania III Append 7th Mix
+
+![20261122_160353-screen.png](docs/screenshots/bm37th/20261122_160353-screen.png)
+![20261122_160200-screen.png](docs/screenshots/bm37th/20261122_160200-screen.png)
+![20261122_160347-screen.png](docs/screenshots/bm37th/20261122_160347-screen.png)
+
+### Beatmania III The Final
+
+![20261122_160601-screen.png](docs/screenshots/bm3final/20261122_160601-screen.png)
+![20261122_160605-screen.png](docs/screenshots/bm3final/20261122_160605-screen.png)
 
 ### Development builds
 
